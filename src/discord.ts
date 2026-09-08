@@ -245,6 +245,7 @@ export class DiscordRooms implements Rooms {
     server: Server,
     instance?: Instance,
     notice?: string,
+    busy = false,
   ): Promise<void> {
     const channel = await this.channel(server);
     let message = server.panelId
@@ -257,8 +258,11 @@ export class DiscordRooms implements Rooms {
         )
       ) ?? null;
     }
-    if (message) await message.edit(serverPanel(server, instance, notice));
-    else message = await channel.send(serverPanel(server, instance, notice));
+    if (message) {
+      await message.edit(serverPanel(server, instance, notice, busy));
+    } else {message = await channel.send(
+        serverPanel(server, instance, notice, busy),
+      );}
     server.panelId = message.id;
     this.store.save(server);
   }

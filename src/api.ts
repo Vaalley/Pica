@@ -6,7 +6,6 @@ export type Instance = {
   hostname: string;
   memoryMiB: number;
   cpus: number;
-  state: string;
   connections: number;
   eulaAccepted: boolean;
   usedBytes: number;
@@ -18,9 +17,7 @@ export type Instance = {
 export type InstanceList = {
   instances: Instance[];
   total: number;
-  running: number;
   maxInstances: number;
-  maxRunning: number;
 };
 export type FileEntry = {
   name: string;

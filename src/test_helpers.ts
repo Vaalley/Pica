@@ -7,7 +7,6 @@ export const instance = (id: string): Instance => ({
   hostname: `${id}.pica.host`,
   memoryMiB: 3072,
   cpus: 2,
-  state: "OPAQUE",
   connections: 0,
   eulaAccepted: true,
   usedBytes: 0,

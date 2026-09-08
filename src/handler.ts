@@ -1,5 +1,7 @@
 import {
+  type ActionRowBuilder,
   AttachmentBuilder,
+  type ButtonBuilder,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   MessageFlags,
@@ -18,7 +20,14 @@ import { bytes, code, downloadAttachment, errorMessage } from "./common.ts";
 import { Confirmations } from "./confirmations.ts";
 import { type DiscordRooms } from "./discord.ts";
 import { Servers } from "./service.ts";
-import { confirmationButtons, textModal } from "./ui.ts";
+import {
+  confirmationButtons,
+  consoleButtons,
+  consoleModal,
+  restartButton,
+  textModal,
+  uploadModal,
+} from "./ui.ts";
 
 export type PortalInteraction =
   | ButtonInteraction
@@ -28,6 +37,7 @@ export function createHandler(
   servers: Servers,
   rooms: Pick<DiscordRooms, "setup">,
   guilds: ReadonlySet<string>,
+  download = downloadAttachment,
 ) {
   const confirmations = new Confirmations();
   const { api, store } = servers;
@@ -41,10 +51,14 @@ export function createHandler(
         ? !commandNames.has(slash.commandName)
         : !customId.startsWith("pica:")
     ) return;
-    const respond = async (content: string, file?: AttachmentBuilder) => {
+    const respond = async (
+      content: string,
+      file?: AttachmentBuilder,
+      components: ActionRowBuilder<ButtonBuilder>[] = [],
+    ) => {
       const payload = {
         content: api.redact(content).slice(0, 1950),
-        components: [],
+        components,
         allowedMentions: { parse: [] as never[] },
         files: file ? [file] : [],
       };
@@ -55,12 +69,18 @@ export function createHandler(
           flags: MessageFlags.Ephemeral,
         });}
     };
-    const output = async (title: string, text: string) => {
+    const output = async (
+      title: string,
+      text: string,
+      components: ActionRowBuilder<ButtonBuilder>[] = [],
+    ) => {
       text = api.redact(text);
       const budget = Math.max(100, 1850 - title.length);
       if (text.length <= budget) {
         await respond(
           `${title}\n\`\`\`text\n${text.replaceAll("```", "ˋˋˋ")}\n\`\`\``,
+          undefined,
+          components,
         );
       } else if (Buffer.byteLength(text) <= interaction.attachmentSizeLimit) {
         await respond(
@@ -68,11 +88,14 @@ export function createHandler(
           new AttachmentBuilder(Buffer.from(text), {
             name: "server-output.txt",
           }),
+          components,
         );
       } else {await respond(
           `${title}\nOutput is too large; showing the end:\n\`\`\`text\n${
             text.slice(-Math.max(100, budget - 80)).replaceAll("```", "ˋˋˋ")
           }\n\`\`\``,
+          undefined,
+          components,
         );}
     };
     try {
@@ -134,6 +157,18 @@ export function createHandler(
       }
       const server = store.owned(guildId, ownerId, interaction.channelId);
       const action = slash?.commandName ?? customId.split(":")[1];
+      if (
+        interaction.isButton() &&
+        ["upload", "software", "command"].includes(action)
+      ) {
+        servers.ready(server);
+        await interaction.showModal(
+          action === "command"
+            ? consoleModal()
+            : uploadModal(action === "software"),
+        );
+        return;
+      }
       if (action === "delete-server" || action === "delete") {
         if (!interaction.isButton() && !interaction.isChatInputCommand()) {
           throw new InputError("Use the Delete server button.");
@@ -144,7 +179,7 @@ export function createHandler(
             `pica:delete-submit:${token}`,
             "Permanently delete your server?",
             "Delete all files and channel: type DELETE",
-            "This cannot be undone",
+            "Players disconnect. This cannot be undone.",
           ),
         );
         return;
@@ -155,7 +190,7 @@ export function createHandler(
         await interaction.reply({
           content: action === "restart"
             ? "Restart your server now? Connected players will be disconnected."
-            : "Stop your server? Players must disconnect first. A later player connection can automatically start it again.",
+            : "Stop your server now? Connected players will be disconnected.",
           components: confirmationButtons(token),
           flags: MessageFlags.Ephemeral,
         });
@@ -179,12 +214,16 @@ export function createHandler(
         await servers.action(server, confirmed);
         await respond(
           confirmed === "stop"
-            ? "Your server has stopped. A player connection can start it again."
+            ? "Minecraft stopped. Click Start when you’re ready to play again."
             : "Your server has restarted. You can rejoin now.",
         );
         return;
       }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (
+        interaction.isButton() &&
+        interaction.message.flags?.has(MessageFlags.Ephemeral)
+      ) await interaction.deferUpdate();
+      else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       if (action === "delete-submit" && interaction.isModalSubmit()) {
         if (
           confirmations.consume(customId.split(":")[2], server) !== "delete"
@@ -204,7 +243,13 @@ export function createHandler(
         return;
       }
       if (action === "panel") {
-        await servers.locks.run(ownerId, () => servers.rooms.panel(server));
+        await servers.locks.run(
+          ownerId,
+          () =>
+            server.phase === "ready"
+              ? servers.refreshPanel(server)
+              : servers.paint(server),
+        );
         await respond("Your server controls are ready above.");
         return;
       }
@@ -220,67 +265,100 @@ export function createHandler(
         return;
       }
       servers.ready(server);
-      if (action === "upload" && !slash) {
-        await respond(
-          "Use `/upload` in this channel, choose your file and its destination path, then confirm replacement.\nExample path: `plugins/MyPlugin.jar` or `server.properties`.",
-        );
-        return;
-      }
-      if (action === "software") {
-        await respond(
-          "Use `/server-software` here and attach your Minecraft server JAR. It will be installed as `boot.jar`.\n\nChoose software compatible with Java 25 and port 25565, then click **Restart** to apply it. Existing worlds and configuration remain in place.",
-        );
-        return;
-      }
       await servers.locks.run(ownerId, async () => {
         servers.ready(server);
-        if (action === "console") {
-          const command = slash?.options.getString("command");
+        if (action === "console" || action === "command-submit") {
+          const command = interaction.isModalSubmit()
+            ? interaction.fields.getTextInputValue("command")
+            : slash?.options.getString("command");
           if (command) {
             const result = await api.run(server.instanceId, command);
             await output(
               "Console response",
               result.response || "Command completed with no output.",
+              consoleButtons(),
             );
           } else {
             const result = await api.tail(server.instanceId);
             await output(
-              "Recent console output · Use /console to run a command or refresh.",
+              "Recent console output",
               result.lines.slice(-(slash?.options.getInteger("lines") ?? 20))
                 .join("\n") || "No console output yet.",
+              consoleButtons(),
             );
           }
           return;
         }
-        if (slash && (action === "upload" || action === "server-software")) {
-          if (slash.options.getBoolean("confirm-replace") !== true) {
+        if (
+          ["upload", "server-software", "upload-submit", "software-submit"]
+            .includes(action)
+        ) {
+          const modal = interaction.isModalSubmit() ? interaction : null;
+          const software = action === "server-software" ||
+            action === "software-submit";
+          if (
+            modal
+              ? modal.fields.getTextInputValue("confirmation").trim() !==
+                "REPLACE"
+              : slash?.options.getBoolean("confirm-replace") !== true
+          ) {
             throw new InputError("Confirm replacement to upload this file.");
           }
-          const attachment = slash.options.getAttachment("file", true);
-          const path = action === "server-software"
-            ? "boot.jar"
-            : validatePath(slash.options.getString("path", true));
+          const attachment = modal
+            ? modal.fields.getUploadedFiles("file", true).first()
+            : slash!.options.getAttachment("file", true);
+          if (!attachment) throw new InputError("Choose one file to upload.");
+          const path = software ? "boot.jar" : validatePath(
+            modal
+              ? modal.fields.getTextInputValue("path")
+              : slash!.options.getString("path", true),
+          );
           if (
-            action === "server-software" &&
+            software &&
             !attachment.name.toLowerCase().endsWith(".jar")
           ) throw new InputError("Attach a Minecraft server .jar file.");
-          const data = await downloadAttachment(
-            attachment.url,
-            attachment.size,
+          if (attachment.size > MAX_FILE_BYTES) {
+            throw new InputError("Uploads cannot exceed 128 MiB.");
+          }
+          await servers.paint(
+            server,
+            `Uploading ${code(attachment.name)}…`,
+            true,
           );
-          const result = await api.write(
-            server.instanceId,
-            path,
-            new Blob([new Uint8Array(data)]),
-            attachment.name,
-          );
-          await respond(
-            `Uploaded ${bytes(result.bytes)} to ${code(result.path)}. ${
+          try {
+            const data = await download(
+              attachment.url,
+              attachment.size,
+            );
+            const result = await api.write(
+              server.instanceId,
+              path,
+              new Blob([new Uint8Array(data)]),
+              attachment.name,
+            );
+            await servers.refreshPanel(
+              server,
+              `Uploaded ${code(result.path)}.${
+                result.restartRequired || path === "boot.jar"
+                  ? " Restart to apply your server software."
+                  : " Some configuration changes require a restart."
+              }`,
+            );
+            await respond(
+              `Uploaded ${bytes(result.bytes)} to ${code(result.path)}. ${
+                result.restartRequired || path === "boot.jar"
+                  ? "Click Restart to apply your server software."
+                  : "Some configuration changes require a restart."
+              }`,
+              undefined,
               result.restartRequired || path === "boot.jar"
-                ? "Click Restart to apply your server software."
-                : "Some configuration changes require a restart."
-            }`,
-          );
+                ? restartButton()
+                : [],
+            );
+          } catch (error) {
+            await servers.paint(server, errorMessage(error));
+            throw error;
+          }
           return;
         }
         if (action === "files") {
@@ -356,6 +434,10 @@ export function createHandler(
                 recursive: slash.options.getBoolean("recursive") ?? false,
                 mode: mode ? Number.parseInt(mode, 8) : undefined,
               },
+            );
+            await servers.refreshPanel(
+              server,
+              "Files updated. Configuration changes may need a restart.",
             );
             await respond(
               `${subcommand} completed: ${code(result.path)}.${

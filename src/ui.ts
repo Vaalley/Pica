@@ -3,6 +3,8 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  FileUploadBuilder,
+  LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -43,6 +45,7 @@ export function serverPanel(
   server: Server,
   instance?: Instance,
   notice?: string,
+  busy = false,
 ) {
   const embed = new EmbedBuilder().setColor(0x65c9a5).setTitle(
     "Your Minecraft server",
@@ -50,13 +53,18 @@ export function serverPanel(
     .setFooter({ text: `Pica · ${server.instanceId}` }).setTimestamp();
   if (server.phase === "provisioning") {
     embed.setDescription(
-      "This is your private server channel. We’re setting up Minecraft.\n\nIf setup was interrupted or no slots were available, use **Finish setup** to try again.",
+      notice ??
+        "This is your private server channel. Use **Finish setup** to continue creating your Minecraft server.",
     );
     return {
       embeds: [embed],
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-          button("retry", "Finish setup", ButtonStyle.Primary),
+          button(
+            "retry",
+            busy ? "Creating server…" : "Finish setup",
+            ButtonStyle.Primary,
+          ).setDisabled(busy),
         ),
       ],
       allowedMentions: { parse: [] as never[] },
@@ -64,13 +72,18 @@ export function serverPanel(
   }
   if (server.phase === "deleting" || server.phase === "deleted") {
     embed.setDescription(
-      "Server deletion needs to finish. Use **Finish deletion** to resume. This permanently removes the server files and this channel.",
+      notice ??
+        "Server deletion needs to finish. Use **Finish deletion** to resume. This permanently removes the server files and this channel.",
     );
     return {
       embeds: [embed],
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-          button("delete", "Finish deletion", ButtonStyle.Danger),
+          button(
+            "delete",
+            busy ? "Deleting…" : "Finish deletion",
+            ButtonStyle.Danger,
+          ).setDisabled(busy),
         ),
       ],
       allowedMentions: { parse: [] as never[] },
@@ -79,7 +92,9 @@ export function serverPanel(
   embed.setDescription(
     [
       notice,
-      "Use the buttons below to manage your server.\nFor files, use `/upload`, `/files`, or `/server-software` in this channel.",
+      busy
+        ? "Please wait. This can take up to three minutes."
+        : "Manage your server below. Upload files, change server software, or open the console without leaving Discord.",
     ].filter(Boolean).join("\n\n"),
   );
   if (instance?.hostname || server.hostname) {
@@ -107,7 +122,7 @@ export function serverPanel(
       embed.addFields({
         name: "⚠️ Storage is full",
         value:
-          "Use `/files` to remove unneeded files. File management remains available.",
+          "Open **Files** to find unneeded files, then use `/files delete` to free space. File management remains available.",
       });
     }
     if (instance.restartRequired) {
@@ -135,7 +150,10 @@ export function serverPanel(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         button("delete", "Delete server", ButtonStyle.Danger),
       ),
-    ],
+    ].map((row) => {
+      for (const component of row.components) component.setDisabled(busy);
+      return row;
+    }),
     allowedMentions: { parse: [] as never[] },
   };
 }
@@ -158,4 +176,76 @@ export function confirmationButtons(token: string) {
     button(`confirm:${token}`, "Confirm", ButtonStyle.Danger),
     button(`cancel:${token}`, "Cancel"),
   )];
+}
+
+export function uploadModal(software: boolean) {
+  const modal = new ModalBuilder().setCustomId(
+    software ? "pica:software-submit" : "pica:upload-submit",
+  )
+    .setTitle(software ? "Install server software" : "Upload a file");
+  if (!software) {
+    modal.addLabelComponents(
+      new LabelBuilder().setLabel("Destination path")
+        .setDescription(
+          "Relative to your Minecraft server, using / between folders.",
+        )
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("path").setStyle(
+            TextInputStyle.Short,
+          ).setPlaceholder("plugins/MyPlugin.jar").setRequired(true)
+            .setMaxLength(512),
+        ),
+    );
+  }
+  modal.addLabelComponents(
+    new LabelBuilder().setLabel(software ? "Minecraft server JAR" : "File")
+      .setDescription(
+        software
+          ? "Installed as boot.jar. Must support Java 25 and port 25565."
+          : "Up to 128 MiB. Discord's upload limit also applies.",
+      )
+      .setFileUploadComponent(
+        new FileUploadBuilder().setCustomId("file").setMinValues(1)
+          .setMaxValues(1).setRequired(true),
+      ),
+    new LabelBuilder().setLabel("Confirm replacement")
+      .setDescription("Type REPLACE to allow overwriting the destination file.")
+      .setTextInputComponent(
+        new TextInputBuilder().setCustomId("confirmation").setStyle(
+          TextInputStyle.Short,
+        ).setPlaceholder("REPLACE").setRequired(true).setMaxLength(20),
+      ),
+  );
+  return modal;
+}
+
+export function consoleModal() {
+  return new ModalBuilder().setCustomId("pica:command-submit").setTitle(
+    "Run a Minecraft command",
+  )
+    .addLabelComponents(
+      new LabelBuilder().setLabel("Command").setDescription(
+        "One command, without a leading /. Example: say Hello everyone",
+      )
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("command").setStyle(
+            TextInputStyle.Short,
+          ).setRequired(true).setMaxLength(4096),
+        ),
+    );
+}
+export function consoleButtons() {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      button("console", "Refresh console"),
+      button("command", "Run command", ButtonStyle.Primary),
+    ),
+  ];
+}
+export function restartButton() {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      button("restart", "Restart to apply", ButtonStyle.Primary),
+    ),
+  ];
 }

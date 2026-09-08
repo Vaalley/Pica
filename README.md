@@ -26,9 +26,11 @@ disconnecting players. Stop asks for confirmation and requires players to leave
 first. Pica can automatically start Minecraft when someone connects, so Stop
 does not prevent future connections from waking it up.
 
-Console and Files show a current snapshot. Upload and Server software explain
-which command to use to attach a file. These commands all work in your own
-channel; you never need to enter a server ID:
+Console shows recent output and has a **Run command** button that opens a form.
+Upload and Server software open a form where you attach the file directly, so
+you never leave the channel. Files shows a current snapshot. The same actions
+are available as commands in your own channel; you never need to enter a server
+ID:
 
 | Command                       | What it does                                                        |
 | ----------------------------- | ------------------------------------------------------------------- |
@@ -113,8 +115,7 @@ personal commands.
 - Server actions use a 180-second API timeout. Interrupted creation retains the
   reserved server and channel so it can be resumed safely.
 - Connections count TCP sessions, including people still logging in. Panel data
-  is refreshed on demand; it does not infer online/offline state from the
-  backend's opaque lifecycle value.
+  is refreshed on demand; the backend reports no online/offline lifecycle state.
 - Configuration edits can require restarting even when no software-change
   warning is shown. File management remains available when storage is full.
 - Secrets and the ownership database are ignored by Git. API errors are
