@@ -1,10 +1,10 @@
 {
   "nodeModulesDir": "auto",
   "tasks": {
-    "start": "deno run --allow-env --allow-net --allow-read --allow-sys --env-file=.env src/main.ts",
-    "dev": "deno run --watch --allow-env --allow-net --allow-read --allow-sys --env-file=.env src/main.ts",
+    "start": "deno run --allow-env --allow-net --allow-read --allow-write=./data --allow-sys --env-file=.env src/main.ts",
+    "dev": "deno run --watch=src --allow-env --allow-net --allow-read --allow-write=./data --allow-sys --env-file=.env src/main.ts",
     "check": "deno fmt --check && deno lint && deno check src/main.ts src/*_test.ts",
-    "test": "deno test --allow-env --allow-read --allow-sys"
+    "test": "deno test --allow-env --allow-read --allow-write=./data --allow-sys"
   },
   "imports": {
     "discord.js": "npm:discord.js@^14.27.0"

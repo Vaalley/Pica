@@ -1,7 +1,10 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
 import { PicaApi } from "./api.ts";
-import { picaCommand } from "./commands.ts";
+import { commands } from "./commands.ts";
 import { createHandler } from "./handler.ts";
+import { Store } from "./store.ts";
+import { DiscordRooms } from "./discord.ts";
+import { Servers } from "./service.ts";
 
 const token = Deno.env.get("DISCORD_TOKEN");
 if (!token) throw new Error("Set DISCORD_TOKEN in .env before starting Pica.");
@@ -22,12 +25,22 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
   allowedMentions: { parse: [] },
 });
-const handle = createHandler(api, guilds);
+Deno.mkdirSync("data", { recursive: true });
+const store = new Store("data/pica.sqlite");
+const rooms = new DiscordRooms(client, store);
+const servers = new Servers(store, api, rooms);
+const handle = createHandler(servers, rooms, guilds);
 client.once(Events.ClientReady, async (readyClient) => {
   try {
     for (const guildId of guilds) {
       const guild = await readyClient.guilds.fetch(guildId);
-      await guild.commands.create(picaCommand.toJSON());
+      for (const command of commands) {
+        await guild.commands.create(command.toJSON());
+      }
+      // Retire the old administrator API command after the personal commands exist.
+      for (const command of (await guild.commands.fetch()).values()) {
+        if (command.name === "pica") await command.delete();
+      }
     }
     // Remove the starter's obsolete global /pica after guild commands succeed.
     const globalCommands = await readyClient.application.commands.fetch();
@@ -46,7 +59,10 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (
+    !interaction.isChatInputCommand() && !interaction.isButton() &&
+    !interaction.isModalSubmit()
+  ) return;
   try {
     await handle(interaction);
   } catch {

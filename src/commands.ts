@@ -4,195 +4,111 @@ import {
   SlashCommandSubcommandBuilder,
 } from "discord.js";
 
-function id(command: SlashCommandSubcommandBuilder) {
-  return command.addStringOption((o) =>
-    o.setName("id").setDescription("Minecraft server ID").setRequired(true)
-      .setMaxLength(32)
-  );
-}
-function path(command: SlashCommandSubcommandBuilder, required = true) {
-  return command.addStringOption((o) =>
-    o.setName("path").setDescription("Relative path using / separators")
+const command = (name: string, description: string) =>
+  new SlashCommandBuilder().setName(name).setDescription(description)
+    .setDMPermission(false);
+const path = (c: SlashCommandSubcommandBuilder, required = true) =>
+  c.addStringOption((o) =>
+    o.setName("path").setDescription("Path inside your Minecraft server")
       .setRequired(required).setMaxLength(512)
   );
-}
-function page(command: SlashCommandSubcommandBuilder) {
-  return command.addIntegerOption((o) =>
-    o.setName("page").setDescription("Page number").setMinValue(1)
-  );
-}
+const upload = (name: string, description: string) =>
+  command(name, description)
+    .addAttachmentOption((o) =>
+      o.setName("file").setDescription("File to upload").setRequired(true)
+    )
+    .addBooleanOption((o) =>
+      o.setName("confirm-replace").setDescription(
+        "I agree to replace the existing file at this location",
+      ).setRequired(true)
+    );
 
-export const picaCommand = new SlashCommandBuilder()
-  .setName("pica")
-  .setDescription("Manage Pica Minecraft servers")
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-  .setDMPermission(false)
-  .addSubcommand((c) => c.setName("help").setDescription("How to use Pica"))
-  .addSubcommand((c) =>
-    page(
-      c.setName("list").setDescription("List Minecraft servers and capacity"),
+export const commands = [
+  command("setup", "Set up the Create server lobby and private server category")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  command("start", "Start your Minecraft server"),
+  command("stop", "Stop your Minecraft server"),
+  command("restart", "Restart your Minecraft server"),
+  command("status", "Refresh your server details and join address"),
+  command("panel", "Restore the controls in your private server channel"),
+  command(
+    "delete-server",
+    "Permanently delete your Minecraft server and private channel",
+  ),
+  command("console", "Read your Minecraft console or run a command")
+    .addStringOption((o) =>
+      o.setName("command").setDescription(
+        "One Minecraft command, without a leading /",
+      ).setMaxLength(4096)
     )
-  )
-  .addSubcommand((c) =>
-    id(c.setName("create").setDescription("Create a Minecraft server"))
-      .addBooleanOption((o) =>
-        o.setName("accept-eula").setDescription(
-          "I accept https://www.minecraft.net/eula",
-        ).setRequired(true)
-      )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("status").setDescription(
-        "Show hostname, connections, and storage",
-      ),
+    .addIntegerOption((o) =>
+      o.setName("lines").setDescription("Recent lines to show (default 20)")
+        .setMinValue(1).setMaxValue(1000)
+    ),
+  upload("upload", "Upload a file to your Minecraft server")
+    .addStringOption((o) =>
+      o.setName("path").setDescription("Destination, e.g. plugins/Example.jar")
+        .setRequired(true).setMaxLength(512)
+    ),
+  upload(
+    "server-software",
+    "Install your server JAR as boot.jar; restart afterward",
+  ),
+  command("files", "Manage the files inside your Minecraft server")
+    .addSubcommand((c) =>
+      path(c.setName("list").setDescription("Browse your files"), false)
+        .addIntegerOption((o) =>
+          o.setName("page").setDescription("Page number").setMinValue(1)
+        )
     )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("prepare").setDescription(
-        "Ensure Minecraft is ready; connections normally handle this automatically",
-      ),
+    .addSubcommand((c) =>
+      path(c.setName("download").setDescription("Download a file"))
     )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("restart").setDescription(
-        "Restart Minecraft to apply changes; disconnects connected players",
-      ),
+    .addSubcommand((c) =>
+      path(c.setName("mkdir").setDescription("Create a folder"))
     )
-      .addBooleanOption((o) =>
-        o.setName("confirm-disconnect").setDescription(
-          "I confirm connected players will be disconnected",
-        )
+    .addSubcommand((c) =>
+      path(
+        c.setName("rename").setDescription("Move or rename a file or folder"),
       )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("delete").setDescription(
-        "PERMANENTLY delete a server and all its files",
-      ),
+        .addStringOption((o) =>
+          o.setName("destination").setDescription("New path").setRequired(true)
+        )
     )
-      .addStringOption((o) =>
-        o.setName("confirm-id").setDescription(
-          "Type the server ID again to confirm permanent deletion",
-        ).setRequired(true)
-      )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("tail").setDescription(
-        "Read a snapshot of recent Minecraft console output",
-      ),
+    .addSubcommand((c) =>
+      path(c.setName("copy").setDescription("Copy a file or folder"))
+        .addStringOption((o) =>
+          o.setName("destination").setDescription("New path").setRequired(true)
+        )
+        .addBooleanOption((o) =>
+          o.setName("recursive").setDescription(
+            "Include everything inside the folder",
+          )
+        )
     )
-      .addIntegerOption((o) =>
-        o.setName("lines").setDescription("Latest lines to show (default 20)")
-          .setMinValue(1).setMaxValue(1000)
+    .addSubcommand((c) =>
+      path(
+        c.setName("delete").setDescription(
+          "Permanently delete a file or folder",
+        ),
       )
-  )
-  .addSubcommand((c) =>
-    id(
-      c.setName("run").setDescription(
-        "Run an administrator Minecraft console command",
-      ),
+        .addStringOption((o) =>
+          o.setName("confirm-path").setDescription(
+            "Repeat the exact path to confirm permanent deletion",
+          ).setRequired(true)
+        )
+        .addBooleanOption((o) =>
+          o.setName("recursive").setDescription(
+            "Delete everything inside the folder",
+          )
+        )
     )
-      .addStringOption((o) =>
-        o.setName("command").setDescription(
-          "One console command, without a leading /",
-        ).setRequired(true).setMaxLength(4096)
-      )
-  )
-  .addSubcommandGroup((g) =>
-    g.setName("files").setDescription("Manage Minecraft server files")
-      .addSubcommand((c) =>
-        page(
-          path(id(c.setName("list").setDescription("List a directory")), false),
+    .addSubcommand((c) =>
+      path(c.setName("chmod").setDescription("Change file permissions"))
+        .addStringOption((o) =>
+          o.setName("mode").setDescription("Octal permissions, e.g. 644 or 755")
+            .setRequired(true)
         )
-      )
-      .addSubcommand((c) =>
-        path(
-          id(
-            c.setName("stat").setDescription("Show file or directory metadata"),
-          ),
-        )
-      )
-      .addSubcommand((c) =>
-        path(id(c.setName("read").setDescription("Download a file privately")))
-      )
-      .addSubcommand((c) =>
-        path(id(c.setName("write").setDescription("Upload or replace a file")))
-          .addAttachmentOption((o) =>
-            o.setName("file").setDescription(
-              "File to upload (maximum 128 MiB; Discord limits also apply)",
-            ).setRequired(true)
-          )
-          .addBooleanOption((o) =>
-            o.setName("confirm-replace").setDescription(
-              "I confirm the target file may be overwritten",
-            ).setRequired(true)
-          )
-      )
-      .addSubcommand((c) =>
-        path(
-          id(
-            c.setName("mkdir").setDescription(
-              "Create a directory and missing parents",
-            ),
-          ),
-        )
-      )
-      .addSubcommand((c) =>
-        path(
-          id(
-            c.setName("rename").setDescription(
-              "Move or rename a file or directory",
-            ),
-          ),
-        )
-          .addStringOption((o) =>
-            o.setName("destination").setDescription(
-              "New relative path (must not exist)",
-            ).setRequired(true)
-          )
-      )
-      .addSubcommand((c) =>
-        path(
-          id(c.setName("copy").setDescription("Copy up to 128 MiB of files")),
-        )
-          .addStringOption((o) =>
-            o.setName("destination").setDescription(
-              "New relative path (must not exist)",
-            ).setRequired(true)
-          )
-          .addBooleanOption((o) =>
-            o.setName("recursive").setDescription("Include directory contents")
-          )
-      )
-      .addSubcommand((c) =>
-        path(
-          id(
-            c.setName("delete").setDescription(
-              "PERMANENTLY delete a file or directory",
-            ),
-          ),
-        )
-          .addStringOption((o) =>
-            o.setName("confirm-path").setDescription(
-              "Type the path again to confirm permanent deletion",
-            ).setRequired(true)
-          )
-          .addBooleanOption((o) =>
-            o.setName("recursive").setDescription(
-              "Delete all directory contents too",
-            )
-          )
-      )
-      .addSubcommand((c) =>
-        path(id(c.setName("chmod").setDescription("Change file permissions")))
-          .addStringOption((o) =>
-            o.setName("mode").setDescription(
-              "Octal rwx permissions, e.g. 644 or 755",
-            ).setRequired(true)
-          )
-      )
-  );
+    ),
+];
+export const commandNames = new Set(commands.map((c) => c.name));

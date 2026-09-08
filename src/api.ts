@@ -189,7 +189,7 @@ export class PicaApi {
   }
   instance(
     id: string,
-    action: "status" | "start" | "restart" | "delete",
+    action: "status" | "start" | "stop" | "restart" | "delete",
   ): Promise<Instance> {
     return this.json(this.route(id, action));
   }

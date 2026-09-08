@@ -24,7 +24,9 @@ Deno.test("all JSON operations use exact documented fields, POST and server-side
   const { api, requests } = mockApi();
   await api.list();
   await api.create("survival", true);
-  for (const action of ["status", "start", "restart", "delete"] as const) {
+  for (
+    const action of ["status", "start", "stop", "restart", "delete"] as const
+  ) {
     await api.instance("survival", action);
   }
   await api.tail("survival");
@@ -42,7 +44,7 @@ Deno.test("all JSON operations use exact documented fields, POST and server-side
   const expected: [string, Record<string, unknown>][] = [
     ["/instance/list", {}],
     ["/instance/create", { id: "survival", eulaAccepted: true }],
-    ...["status", "start", "restart", "delete", "tail"].map((
+    ...["status", "start", "stop", "restart", "delete", "tail"].map((
       action,
     ): [string, Record<string, unknown>] => [
       `/instance/survival/${action}`,

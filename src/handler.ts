@@ -1,435 +1,391 @@
 import {
   AttachmentBuilder,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   MessageFlags,
+  type ModalSubmitInteraction,
   PermissionFlagsBits,
 } from "discord.js";
 import { Buffer } from "node:buffer";
 import {
   InputError,
-  type Instance,
   MAX_FILE_BYTES,
-  PicaApi,
   PicaApiError,
-  readBytes,
-  validateId,
   validatePath,
 } from "./api.ts";
+import { commandNames } from "./commands.ts";
+import { bytes, code, downloadAttachment, errorMessage } from "./common.ts";
+import { Confirmations } from "./confirmations.ts";
+import { type DiscordRooms } from "./discord.ts";
+import { Servers } from "./service.ts";
+import { confirmationButtons, textModal } from "./ui.ts";
 
-export function authorized(
-  guildId: string | null,
-  administrator: boolean,
+export type PortalInteraction =
+  | ButtonInteraction
+  | ChatInputCommandInteraction
+  | ModalSubmitInteraction;
+export function createHandler(
+  servers: Servers,
+  rooms: Pick<DiscordRooms, "setup">,
   guilds: ReadonlySet<string>,
-): boolean {
-  return guildId !== null && guilds.has(guildId) && administrator;
-}
-export class OperationLocks {
-  private active = new Set<string>();
-  async run<T>(id: string, operation: () => Promise<T>): Promise<T> {
-    if (this.active.has(id)) {
-      throw new InputError(
-        "Another operation is in progress for this server. Wait for it to finish.",
-      );
-    }
-    this.active.add(id);
-    try {
-      return await operation();
-    } finally {
-      this.active.delete(id);
-    }
-  }
-}
-export function bytes(value: number): string {
-  return value >= 1024 ** 3
-    ? `${(value / 1024 ** 3).toFixed(2)} GiB`
-    : `${(value / 1024 ** 2).toFixed(2)} MiB`;
-}
-function code(value: string): string {
-  return `\`${value.replaceAll("`", "ˋ").replace(/[\r\n]/g, " ")}\``;
-}
-export function instanceDetails(instance: Instance): string {
-  return [
-    `**${instance.id}** — connect to ${code(instance.hostname)}`,
-    `Connections: **${instance.connections}** (TCP sessions; may include users still signing in)`,
-    `Storage: **${bytes(instance.usedBytes)} / ${
-      bytes(instance.storageLimitBytes)
-    }**`,
-    `Resources: ${instance.memoryMiB} MiB RAM · ${instance.cpus} CPUs (fixed)`,
-    instance.storageBlocked
-      ? `⚠️ **Storage blocked.** Free space with ${
-        code(`/pica files list id:${instance.id}`)
-      }; file operations remain available.`
-      : "",
-    instance.restartRequired
-      ? "⚠️ **Restart required** after a boot.jar change. Use /pica restart."
-      : "",
-  ].filter(Boolean).join("\n");
-}
-export function errorMessage(error: unknown): string {
-  if (error instanceof InputError) return error.message;
-  if (error instanceof PicaApiError) {
-    switch (error.status) {
-      case 400:
-        return `Check the supplied options: ${error.message}`;
-      case 401:
-        return "Pica authentication failed. Ask the bot operator to check its server configuration.";
-      case 404:
-        return "Server or file not found. Refresh with /pica list or /pica files list.";
-      case 409:
-        return `Pica could not complete this operation: ${error.message}`;
-      case 413:
-        return "This file exceeds Pica's 128 MiB upload limit.";
-      case 502:
-        return "Minecraft console is unavailable. Try again shortly.";
-      case 503:
-        return "All server slots are busy. Try again shortly.";
-      default:
-        return "Pica could not complete the request. Try again or contact the bot operator.";
-    }
-  }
-  if (
-    error instanceof Error &&
-    (error.name === "TimeoutError" || error.name === "AbortError")
-  ) {
-    return "The request timed out. It may still finish on Pica. Check status or files before retrying.";
-  }
-  return "The request could not be completed. Check Pica connectivity or contact the bot operator.";
-}
-export function confirmDelete(
-  expected: string,
-  confirmation: string | null,
-): void {
-  if (confirmation !== expected) {
-    throw new InputError(
-      "Confirmation did not match. Type the exact ID or path again to confirm permanent deletion.",
-    );
-  }
-}
-export async function downloadAttachment(
-  url: string,
-  declaredSize: number,
-  request: typeof fetch = fetch,
-): Promise<Uint8Array> {
-  if (declaredSize > MAX_FILE_BYTES) {
-    throw new InputError("Uploads cannot exceed 128 MiB.");
-  }
-  const parsed = new URL(url);
-  if (
-    parsed.protocol !== "https:" ||
-    !["cdn.discordapp.com", "media.discordapp.net"].includes(parsed.hostname) ||
-    parsed.port || parsed.username || parsed.password ||
-    !parsed.pathname.startsWith("/attachments/")
-  ) {
-    throw new InputError("Use a Discord file attachment for uploads.");
-  }
-  const response = await request(url, {
-    signal: AbortSignal.timeout(180_000),
-    redirect: "error",
-  });
-  if (!response.ok) {
-    throw new InputError(
-      "Could not download the Discord attachment. Attach it again and retry.",
-    );
-  }
-  return readBytes(response, MAX_FILE_BYTES);
-}
-function paginate<T>(
-  items: T[],
-  page: number,
-  size: number,
-): { items: T[]; footer: string } {
-  const pages = Math.max(1, Math.ceil(items.length / size));
-  if (page > pages) throw new InputError(`Choose a page from 1 to ${pages}.`);
-  return {
-    items: items.slice((page - 1) * size, page * size),
-    footer: `Page ${page}/${pages} · ${items.length} entries`,
-  };
-}
-
-export function createHandler(api: PicaApi, guilds: ReadonlySet<string>) {
-  const locks = new OperationLocks();
-  return async (interaction: ChatInputCommandInteraction): Promise<void> => {
-    if (interaction.commandName !== "pica") return;
+) {
+  const confirmations = new Confirmations();
+  const { api, store } = servers;
+  return async (interaction: PortalInteraction): Promise<void> => {
+    const slash = interaction.isChatInputCommand() ? interaction : null;
+    const customId = !interaction.isChatInputCommand()
+      ? interaction.customId
+      : "";
     if (
-      !authorized(
-        interaction.guildId,
-        interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ??
-          false,
-        guilds,
-      )
-    ) {
-      await interaction.reply({
-        content:
-          "Pica is restricted to administrators in configured Discord servers.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const respond = async (text: string, file?: AttachmentBuilder) => {
-      await interaction.editReply({
-        content: api.redact(text).slice(0, 1950),
-        allowedMentions: { parse: [] },
+      slash
+        ? !commandNames.has(slash.commandName)
+        : !customId.startsWith("pica:")
+    ) return;
+    const respond = async (content: string, file?: AttachmentBuilder) => {
+      const payload = {
+        content: api.redact(content).slice(0, 1950),
+        components: [],
+        allowedMentions: { parse: [] as never[] },
         files: file ? [file] : [],
-      });
+      };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(payload);
+      } else {await interaction.reply({
+          ...payload,
+          flags: MessageFlags.Ephemeral,
+        });}
     };
-    const output = (title: string, text: string) => {
+    const output = async (title: string, text: string) => {
       text = api.redact(text);
-      if (text.length <= 1600) {
-        return respond(
+      const budget = Math.max(100, 1850 - title.length);
+      if (text.length <= budget) {
+        await respond(
           `${title}\n\`\`\`text\n${text.replaceAll("```", "ˋˋˋ")}\n\`\`\``,
         );
-      }
-      const data = Buffer.from(text);
-      if (data.length > interaction.attachmentSizeLimit) {
-        return respond(
-          `${title}\nOutput exceeds Discord's file limit; showing the end:\n\`\`\`text\n${
-            text.slice(-1400).replaceAll("```", "ˋˋˋ")
+      } else if (Buffer.byteLength(text) <= interaction.attachmentSizeLimit) {
+        await respond(
+          title,
+          new AttachmentBuilder(Buffer.from(text), {
+            name: "server-output.txt",
+          }),
+        );
+      } else {await respond(
+          `${title}\nOutput is too large; showing the end:\n\`\`\`text\n${
+            text.slice(-Math.max(100, budget - 80)).replaceAll("```", "ˋˋˋ")
           }\n\`\`\``,
-        );
-      }
-      return respond(
-        title,
-        new AttachmentBuilder(data, { name: "pica-output.txt" }),
-      );
+        );}
     };
-    const options = interaction.options;
-    const subcommand = options.getSubcommand();
-    const group = options.getSubcommandGroup();
     try {
-      if (subcommand === "help") {
-        await respond([
-          "**Pica Minecraft hosting**",
-          "`/pica list` · `/pica create` · `/pica status`",
-          "Connect using the returned hostname; Minecraft preparation is automatic.",
-          "`/pica prepare` explicitly prepares Minecraft. `/pica restart` applies JAR/config changes and disconnects players.",
-          "`/pica tail` reads a console snapshot; `/pica run` executes an administrator command.",
-          "`/pica files` lists, downloads, uploads, and manages files. Uploads replace the target. Some edits require a restart even without a restart warning.",
-          "`/pica delete` permanently removes a server and all files; type the ID again to confirm. File deletion similarly requires the exact path.",
-          "Create requires explicit acceptance of the Minecraft EULA: https://www.minecraft.net/eula",
-          "All replies are private. Administrators in configured guilds share access to all Pica instances.",
-        ].join("\n"));
-        return;
-      }
-      if (!group && subcommand === "list") {
-        const list = await api.list();
-        const page = paginate(
-          list.instances,
-          options.getInteger("page") ?? 1,
-          10,
+      if (
+        !interaction.guildId || !guilds.has(interaction.guildId) ||
+        !interaction.channelId
+      ) {
+        throw new InputError(
+          "Pica is only available in its configured Discord servers.",
         );
-        await respond([
-          `**Servers ${list.total}/${list.maxInstances}** · Occupied slots ${list.running}/${list.maxRunning}`,
-          ...page.items.map((i) =>
-            `${code(i.id)} → ${code(i.hostname)}${
-              i.storageBlocked ? " ⚠️ storage blocked" : ""
-            }${i.restartRequired ? " · restart required" : ""}`
-          ),
-          list.total ? page.footer : "No servers yet. Use /pica create.",
-        ].join("\n"));
+      }
+      const guildId = interaction.guildId;
+      const ownerId = interaction.user.id;
+      if (slash?.commandName === "setup") {
+        if (
+          !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+        ) {
+          throw new InputError(
+            "Only a Discord server administrator can run /setup.",
+          );
+        }
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const guild = await interaction.client.guilds.fetch(guildId);
+        const channelId = await rooms.setup(guild);
+        await respond(
+          `Ready! Members can create their Minecraft server in <#${channelId}>.`,
+        );
         return;
       }
-      const id = validateId(options.getString("id", true));
-      const execute = async () => {
-        if (group === "files") {
-          const path = validatePath(
-            options.getString("path") ?? "",
-            ["list", "stat"].includes(subcommand),
+      if (customId === "pica:create" || customId === "pica:create-submit") {
+        const setup = store.setup(guildId);
+        if (
+          setup?.lobbyId !== interaction.channelId ||
+          (interaction.isButton() && setup.messageId !== interaction.message.id)
+        ) {
+          throw new InputError(
+            "Use the Create server button in #create-a-server.",
           );
-          switch (subcommand) {
-            case "list": {
-              const result = await api.files(id, path);
-              const page = paginate(
-                result.entries,
-                options.getInteger("page") ?? 1,
-                10,
-              );
-              await output(
-                `**${id}** · ${code(result.path)} · ${page.footer}`,
-                page.items.map((f) =>
-                  `${f.symlink ? "LINK" : f.directory ? "DIR " : "FILE"} ${
-                    f.mode.toString(8).padStart(3, "0")
-                  } ${bytes(f.size)} ${f.name}`
-                ).join("\n") || "Empty directory.",
-              );
-              break;
-            }
-            case "stat": {
-              const file = await api.stat(id, path);
-              await output(
-                `${id} · ${code(path || ".")}`,
-                `${file.directory ? "Directory" : "File"}${
-                  file.symlink ? " (symlink)" : ""
-                }\nSize: ${bytes(file.size)}\nPermissions: ${
-                  file.mode.toString(8).padStart(3, "0")
-                }\nModified: ${file.modified}`,
-              );
-              break;
-            }
-            case "read": {
-              const limit = Math.min(
-                MAX_FILE_BYTES,
-                interaction.attachmentSizeLimit,
-              );
-              const file = await api.stat(id, path);
-              if (file.directory || file.symlink) {
-                throw new InputError("Choose a regular file to download.");
-              }
-              if (file.size > limit) {
-                throw new InputError(
-                  `File exceeds the current transfer limit (${
-                    bytes(limit)
-                  }). Discord may allow less than Pica's 128 MiB.`,
-                );
-              }
-              const data = await api.read(id, path, limit);
-              await respond(
-                `${id} · ${code(path)}`,
-                new AttachmentBuilder(Buffer.from(data), {
-                  name: path.split("/").at(-1)!,
-                }),
-              );
-              break;
-            }
-            case "write": {
-              if (options.getBoolean("confirm-replace") !== true) {
-                throw new InputError(
-                  "Set confirm-replace to true to acknowledge that the target file may be overwritten.",
-                );
-              }
-              const attachment = options.getAttachment("file", true);
-              const data = await downloadAttachment(
-                attachment.url,
-                attachment.size,
-              );
-              const result = await api.write(
-                id,
-                path,
-                new Blob([new Uint8Array(data)]),
-                attachment.name,
-              );
-              await respond(
-                `Uploaded ${bytes(result.bytes)} to ${code(result.path)}.${
-                  result.restartRequired
-                    ? " **Restart required.** Use /pica restart."
-                    : " Configuration changes may require /pica restart."
-                }`,
-              );
-              break;
-            }
-            case "mkdir":
-            case "rename":
-            case "copy":
-            case "delete":
-            case "chmod": {
-              if (subcommand === "delete") {
-                confirmDelete(
-                  options.getString("path", true),
-                  options.getString("confirm-path"),
-                );
-              }
-              const mode = options.getString("mode");
-              if (subcommand === "chmod" && !/^[0-7]{3,4}$/.test(mode ?? "")) {
-                throw new InputError(
-                  "Use octal permissions such as 644, 0755, or 600.",
-                );
-              }
-              const result = await api.mutate(id, subcommand, path, {
-                destination: options.getString("destination") ?? undefined,
-                recursive: options.getBoolean("recursive") ?? false,
-                mode: mode === null ? undefined : Number.parseInt(mode, 8),
-              });
-              await respond(
-                `${subcommand} completed: ${code(result.path)}.${
-                  result.restartRequired
-                    ? " **Restart required.**"
-                    : " Configuration changes may require a restart."
-                }`,
-              );
-              break;
-            }
-            default:
-              throw new InputError("Unknown file command.");
+        }
+        const existing = store.owner(ownerId);
+        if (interaction.isButton() && !existing) {
+          await interaction.showModal(
+            textModal(
+              "pica:create-submit",
+              "Create your Minecraft server",
+              "Accept Minecraft EULA: type ACCEPT",
+              "Read minecraft.net/eula, then type ACCEPT",
+            ),
+          );
+          return;
+        }
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const eula = interaction.isModalSubmit()
+          ? interaction.fields.getTextInputValue("confirmation")
+          : "ACCEPT";
+        const server = await servers.create(guildId, ownerId, eula);
+        await respond(`Go to <#${server.channelId}> to manage your server.`);
+        return;
+      }
+      const server = store.owned(guildId, ownerId, interaction.channelId);
+      const action = slash?.commandName ?? customId.split(":")[1];
+      if (action === "delete-server" || action === "delete") {
+        if (!interaction.isButton() && !interaction.isChatInputCommand()) {
+          throw new InputError("Use the Delete server button.");
+        }
+        const token = confirmations.issue(server, "delete");
+        await interaction.showModal(
+          textModal(
+            `pica:delete-submit:${token}`,
+            "Permanently delete your server?",
+            "Delete all files and channel: type DELETE",
+            "This cannot be undone",
+          ),
+        );
+        return;
+      }
+      if (action === "restart" || action === "stop") {
+        servers.ready(server);
+        const token = confirmations.issue(server, action);
+        await interaction.reply({
+          content: action === "restart"
+            ? "Restart your server now? Connected players will be disconnected."
+            : "Stop your server? Players must disconnect first. A later player connection can automatically start it again.",
+          components: confirmationButtons(token),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (action === "confirm" || action === "cancel") {
+        const confirmed = confirmations.consume(customId.split(":")[2], server);
+        if (!interaction.isButton()) {
+          throw new InputError("Use the confirmation buttons.");
+        }
+        await interaction.update({
+          content: action === "cancel"
+            ? "Canceled."
+            : "Working on your server…",
+          components: [],
+        });
+        if (action === "cancel") return;
+        if (confirmed === "delete") {
+          throw new InputError("Use the delete confirmation form.");
+        }
+        await servers.action(server, confirmed);
+        await respond(
+          confirmed === "stop"
+            ? "Your server has stopped. A player connection can start it again."
+            : "Your server has restarted. You can rejoin now.",
+        );
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (action === "delete-submit" && interaction.isModalSubmit()) {
+        if (
+          confirmations.consume(customId.split(":")[2], server) !== "delete"
+        ) throw new InputError("Choose Delete server again.");
+        await respond(
+          "Deleting your server and all its files. This channel will disappear when deletion is complete.",
+        );
+        await servers.delete(
+          server,
+          interaction.fields.getTextInputValue("confirmation"),
+        );
+        return;
+      }
+      if (action === "retry") {
+        await servers.create(guildId, ownerId, "ACCEPT");
+        await respond("Your server channel is ready. Use the controls above.");
+        return;
+      }
+      if (action === "panel") {
+        await servers.locks.run(ownerId, () => servers.rooms.panel(server));
+        await respond("Your server controls are ready above.");
+        return;
+      }
+      if (action === "start" || action === "status") {
+        const instance = await servers.action(server, action);
+        await respond(
+          `${
+            action === "start"
+              ? "Your server is ready!"
+              : "Server details refreshed."
+          } Join ${code(instance.hostname)}.`,
+        );
+        return;
+      }
+      servers.ready(server);
+      if (action === "upload" && !slash) {
+        await respond(
+          "Use `/upload` in this channel, choose your file and its destination path, then confirm replacement.\nExample path: `plugins/MyPlugin.jar` or `server.properties`.",
+        );
+        return;
+      }
+      if (action === "software") {
+        await respond(
+          "Use `/server-software` here and attach your Minecraft server JAR. It will be installed as `boot.jar`.\n\nChoose software compatible with Java 25 and port 25565, then click **Restart** to apply it. Existing worlds and configuration remain in place.",
+        );
+        return;
+      }
+      await servers.locks.run(ownerId, async () => {
+        servers.ready(server);
+        if (action === "console") {
+          const command = slash?.options.getString("command");
+          if (command) {
+            const result = await api.run(server.instanceId, command);
+            await output(
+              "Console response",
+              result.response || "Command completed with no output.",
+            );
+          } else {
+            const result = await api.tail(server.instanceId);
+            await output(
+              "Recent console output · Use /console to run a command or refresh.",
+              result.lines.slice(-(slash?.options.getInteger("lines") ?? 20))
+                .join("\n") || "No console output yet.",
+            );
           }
           return;
         }
-        switch (subcommand) {
-          case "create":
-            await respond(
-              instanceDetails(
-                await api.create(id, options.getBoolean("accept-eula", true)),
-              ),
+        if (slash && (action === "upload" || action === "server-software")) {
+          if (slash.options.getBoolean("confirm-replace") !== true) {
+            throw new InputError("Confirm replacement to upload this file.");
+          }
+          const attachment = slash.options.getAttachment("file", true);
+          const path = action === "server-software"
+            ? "boot.jar"
+            : validatePath(slash.options.getString("path", true));
+          if (
+            action === "server-software" &&
+            !attachment.name.toLowerCase().endsWith(".jar")
+          ) throw new InputError("Attach a Minecraft server .jar file.");
+          const data = await downloadAttachment(
+            attachment.url,
+            attachment.size,
+          );
+          const result = await api.write(
+            server.instanceId,
+            path,
+            new Blob([new Uint8Array(data)]),
+            attachment.name,
+          );
+          await respond(
+            `Uploaded ${bytes(result.bytes)} to ${code(result.path)}. ${
+              result.restartRequired || path === "boot.jar"
+                ? "Click Restart to apply your server software."
+                : "Some configuration changes require a restart."
+            }`,
+          );
+          return;
+        }
+        if (action === "files") {
+          const subcommand = slash?.options.getSubcommand() ?? "list";
+          const path = validatePath(
+            slash?.options.getString("path") ?? "",
+            subcommand === "list",
+          );
+          if (subcommand === "list") {
+            const result = await api.files(server.instanceId, path);
+            const page = slash?.options.getInteger("page") ?? 1;
+            const pages = Math.max(1, Math.ceil(result.entries.length / 15));
+            if (page > pages) {
+              throw new InputError(`Choose a page from 1 to ${pages}.`);
+            }
+            await output(
+              `${
+                code(result.path)
+              } · Page ${page}/${pages} · Use /files to browse or manage files.`,
+              result.entries.slice((page - 1) * 15, page * 15).map((f) =>
+                `${f.symlink ? "LINK" : f.directory ? "DIR " : "FILE"} ${
+                  bytes(f.size)
+                } ${f.name}`
+              ).join("\n") || "This folder is empty.",
             );
-            break;
-          case "status":
-            await respond(instanceDetails(await api.instance(id, "status")));
-            break;
-          case "prepare":
-            await respond(instanceDetails(await api.instance(id, "start")));
-            break;
-          case "restart": {
-            const instance = await api.instance(id, "status");
-            if (
-              instance.connections > 0 &&
-              options.getBoolean("confirm-disconnect") !== true
-            ) {
+          } else if (subcommand === "download") {
+            const limit = Math.min(
+              MAX_FILE_BYTES,
+              interaction.attachmentSizeLimit,
+            );
+            const file = await api.stat(server.instanceId, path);
+            if (file.directory || file.symlink) {
+              throw new InputError("Choose a regular file to download.");
+            }
+            if (file.size > limit) {
               throw new InputError(
-                `Restarting ${id} will disconnect connected players (${instance.connections} TCP sessions). Run /pica restart again with confirm-disconnect:true to confirm.`,
+                `File exceeds the current download limit (${bytes(limit)}).`,
               );
             }
-            await respond(instanceDetails(await api.instance(id, "restart")));
-            break;
-          }
-          case "delete":
-            confirmDelete(id, options.getString("confirm-id"));
-            await api.instance(id, "delete");
+            const data = await api.read(server.instanceId, path, limit);
             await respond(
-              `Permanently deleted ${code(id)} and its server files.`,
+              code(path),
+              new AttachmentBuilder(Buffer.from(data), {
+                name: path.split("/").at(-1)!,
+              }),
             );
-            break;
-          case "tail": {
-            const tail = await api.tail(id);
-            await output(
-              `**${id} console snapshot** · Run /pica tail to refresh.`,
-              tail.lines.slice(-(options.getInteger("lines") ?? 20)).join(
-                "\n",
-              ) || "No console output yet.",
+          } else if (
+            slash &&
+            ["mkdir", "rename", "copy", "delete", "chmod"].includes(subcommand)
+          ) {
+            if (
+              subcommand === "delete" &&
+              slash.options.getString("confirm-path") !==
+                slash.options.getString("path")
+            ) {
+              throw new InputError(
+                "Repeat the exact path in confirm-path to permanently delete it.",
+              );
+            }
+            const mode = slash.options.getString("mode");
+            if (subcommand === "chmod" && !/^[0-7]{3,4}$/.test(mode ?? "")) {
+              throw new InputError(
+                "Use octal permissions such as 644 or 0755.",
+              );
+            }
+            const result = await api.mutate(
+              server.instanceId,
+              subcommand as "mkdir" | "rename" | "copy" | "delete" | "chmod",
+              path,
+              {
+                destination: slash.options.getString("destination") ??
+                  undefined,
+                recursive: slash.options.getBoolean("recursive") ?? false,
+                mode: mode ? Number.parseInt(mode, 8) : undefined,
+              },
             );
-            break;
+            await respond(
+              `${subcommand} completed: ${code(result.path)}.${
+                result.restartRequired
+                  ? " Click Restart to apply the change."
+                  : ""
+              }`,
+            );
           }
-          case "run": {
-            const result = await api.run(
-              id,
-              options.getString("command", true),
-            );
-            await output(
-              `**${id} console**`,
-              result.response || "Command completed with no output.",
-            );
-            break;
-          }
-          default:
-            throw new InputError("Unknown Pica command.");
+          return;
         }
-      };
-      const readOnly = group === "files"
-        ? ["list", "stat", "read"].includes(subcommand)
-        : ["status", "tail"].includes(subcommand);
-      if (readOnly) await execute();
-      else await locks.run(id, execute);
+        throw new InputError("Use the controls in your server channel.");
+      });
     } catch (error) {
-      // Never log Discord request objects, interaction tokens, or raw fetch errors.
       if (error instanceof PicaApiError) {
         console.error(
           `Pica HTTP ${error.status}: ${api.redact(error.message)}`,
         );
       } else if (!(error instanceof InputError)) {
         console.error(
-          "Pica operation failed:",
+          "Pica interaction failed:",
           error instanceof Error ? error.name : "Unknown error",
         );
       }
-      await respond(errorMessage(error));
+      const own = store.owner(interaction.user.id);
+      const recovery = own?.guildId === interaction.guildId && own?.channelId &&
+          own.phase === "provisioning"
+        ? `\nYour private channel is <#${own.channelId}>. Use Finish setup there to retry.`
+        : "";
+      await respond(errorMessage(error) + recovery);
     }
   };
 }
