@@ -2,6 +2,9 @@ import { InputError, MAX_FILE_BYTES, PicaApiError, readBytes } from "./api.ts";
 
 export class OperationLocks {
   private active = new Set<string>();
+  has(key: string): boolean {
+    return this.active.has(key);
+  }
   async run<T>(key: string, operation: () => Promise<T>): Promise<T> {
     if (this.active.has(key)) {
       throw new InputError(

@@ -6,8 +6,11 @@ export type Server = {
   guildId: string;
   instanceId: string;
   channelId: string | null;
-  panelId: string | null;
+  consoleId: string | null;
+  statusId: string | null;
+  actionsId: string | null;
   hostname: string | null;
+  software: string | null;
   phase: "provisioning" | "ready" | "deleting" | "deleted";
 };
 export type Setup = {
@@ -25,42 +28,80 @@ export class Store {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS servers (
-        ownerId TEXT PRIMARY KEY, guildId TEXT NOT NULL,
-        instanceId TEXT NOT NULL UNIQUE, channelId TEXT UNIQUE,
-        panelId TEXT, hostname TEXT,
-        phase TEXT NOT NULL CHECK (phase IN ('provisioning','ready','deleting','deleted'))
-      );
       CREATE TABLE IF NOT EXISTS setups (
         guildId TEXT PRIMARY KEY, lobbyId TEXT, categoryId TEXT, messageId TEXT
       );
     `);
+    const columns = this.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='servers'",
+      ).all().length
+      ? (this.db.prepare("PRAGMA table_info(servers)").all() as {
+        name: string;
+      }[]).map((c) => c.name)
+      : [];
+    if (!columns.length) {
+      this.db.exec(`
+        CREATE TABLE servers (
+          ownerId TEXT PRIMARY KEY, guildId TEXT NOT NULL,
+          instanceId TEXT NOT NULL UNIQUE, channelId TEXT UNIQUE,
+          consoleId TEXT, statusId TEXT, actionsId TEXT,
+          hostname TEXT, software TEXT,
+          phase TEXT NOT NULL CHECK (phase IN ('provisioning','ready','deleting','deleted'))
+        );
+      `);
+    } else if (!columns.includes("consoleId")) {
+      this.db.exec(`
+        BEGIN;
+        ALTER TABLE servers RENAME TO servers_old;
+        CREATE TABLE servers (
+          ownerId TEXT PRIMARY KEY, guildId TEXT NOT NULL,
+          instanceId TEXT NOT NULL UNIQUE, channelId TEXT UNIQUE,
+          consoleId TEXT, statusId TEXT, actionsId TEXT,
+          hostname TEXT, software TEXT,
+          phase TEXT NOT NULL CHECK (phase IN ('provisioning','ready','deleting','deleted'))
+        );
+        INSERT INTO servers (ownerId, guildId, instanceId, channelId, hostname, phase)
+          SELECT ownerId, guildId, instanceId, channelId, hostname, phase FROM servers_old;
+        DROP TABLE servers_old;
+        COMMIT;
+      `);
+    }
   }
   owner(ownerId: string): Server | undefined {
     return this.db.prepare("SELECT * FROM servers WHERE ownerId = ?").get(
       ownerId,
     ) as Server | undefined;
   }
-  reserve(ownerId: string, guildId: string): Server {
+  all(): Server[] {
+    return this.db.prepare("SELECT * FROM servers").all() as Server[];
+  }
+  reserve(ownerId: string, guildId: string, instanceId: string): Server {
     const existing = this.owner(ownerId);
     if (existing) return existing;
-    const instanceId = `s-${
-      crypto.randomUUID().replaceAll("-", "").slice(0, 20)
-    }`;
     this.db.prepare(
       "INSERT INTO servers (ownerId, guildId, instanceId, phase) VALUES (?, ?, ?, 'provisioning')",
     )
       .run(ownerId, guildId, instanceId);
     return this.owner(ownerId)!;
   }
+  /** Drop a provisioning reservation so a fresh instance ID can be tried. */
+  release(server: Server): void {
+    this.db.prepare(
+      "DELETE FROM servers WHERE ownerId=? AND instanceId=? AND phase='provisioning'",
+    ).run(server.ownerId, server.instanceId);
+  }
   save(server: Server): void {
     this.db.prepare(
-      "UPDATE servers SET channelId=?, panelId=?, hostname=?, phase=? WHERE ownerId=? AND instanceId=?",
+      `UPDATE servers SET channelId=?, consoleId=?, statusId=?, actionsId=?,
+       hostname=?, software=?, phase=? WHERE ownerId=? AND instanceId=?`,
     )
       .run(
         server.channelId,
-        server.panelId,
+        server.consoleId,
+        server.statusId,
+        server.actionsId,
         server.hostname,
+        server.software,
         server.phase,
         server.ownerId,
         server.instanceId,

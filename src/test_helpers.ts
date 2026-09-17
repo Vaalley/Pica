@@ -1,5 +1,5 @@
 import { type Instance, PicaApi } from "./api.ts";
-import { type Rooms, Servers } from "./service.ts";
+import { type ChannelView, type Rooms, Servers } from "./service.ts";
 import { Store } from "./store.ts";
 
 export const instance = (id: string): Instance => ({
@@ -15,7 +15,22 @@ export const instance = (id: string): Instance => ({
   storageLimitBytes: 10 * 1024 ** 3,
   diskBytes: 15 * 1024 ** 3,
 });
-export function fixture() {
+export type TestRooms = Rooms & {
+  created: number;
+  removed: number;
+  failRender: boolean;
+  failRemove: boolean;
+  views: ChannelView[];
+};
+export type Fixture = {
+  store: Store;
+  api: PicaApi;
+  rooms: TestRooms;
+  service: Servers;
+  remote: Map<string, Instance>;
+  requests: string[];
+};
+export function fixture(): Fixture {
   const store = new Store(":memory:");
   store.saveSetup({
     guildId: "guild",
@@ -25,16 +40,12 @@ export function fixture() {
   });
   const remote = new Map<string, Instance>();
   const requests: string[] = [];
-  const rooms: Rooms & {
-    created: number;
-    removed: number;
-    failPanel: boolean;
-    failRemove: boolean;
-  } = {
+  const rooms: TestRooms = {
     created: 0,
     removed: 0,
-    failPanel: false,
+    failRender: false,
     failRemove: false,
+    views: [],
     ensure(server) {
       if (!server.channelId) {
         server.channelId = `channel-${server.ownerId}`;
@@ -43,8 +54,9 @@ export function fixture() {
       }
       return Promise.resolve();
     },
-    panel() {
-      return rooms.failPanel
+    render(_server, view) {
+      rooms.views.push(view);
+      return rooms.failRender
         ? Promise.reject(new Error("Discord unavailable"))
         : Promise.resolve();
     },
@@ -70,6 +82,7 @@ export function fixture() {
       const value = remote.get(id);
       if (!value) return Response.json({ error: "missing" }, { status: 404 });
       if (path.endsWith("/delete")) remote.delete(id);
+      if (path.endsWith("/tail")) return Response.json({ lines: ["log"] });
       await Promise.resolve();
       return Response.json(value);
     },

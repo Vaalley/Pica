@@ -1,16 +1,18 @@
 import {
   ChannelType,
   type Client,
+  Collection,
   type Guild,
+  type Message,
   OverwriteType,
   PermissionFlagsBits as P,
   type TextChannel,
 } from "discord.js";
-import { InputError, type Instance } from "./api.ts";
+import { InputError } from "./api.ts";
 import { OperationLocks } from "./common.ts";
-import { type Rooms } from "./service.ts";
+import { type ChannelView, type Rooms } from "./service.ts";
 import { type Server, Store } from "./store.ts";
-import { lobbyPanel, serverPanel } from "./ui.ts";
+import { lobbyPanel } from "./ui.ts";
 
 export function privateOverwrites(
   guildId: string,
@@ -49,7 +51,6 @@ export function privateOverwrites(
         P.ReadMessageHistory,
         P.AttachFiles,
         P.EmbedLinks,
-        P.UseApplicationCommands,
       ],
       deny: [
         P.ManageChannels,
@@ -182,14 +183,14 @@ export class DiscordRooms implements Rooms {
     const guild = await this.client.guilds.fetch(server.guildId);
     const setup = this.store.setup(server.guildId);
     if (!setup?.categoryId) {
-      throw new InputError("Ask an administrator to run /setup first.");
+      throw new InputError("Ask an administrator to finish Pica setup first.");
     }
     const category = await missingAsNull(() =>
       guild.channels.fetch(setup.categoryId!)
     );
     if (!category || category.type !== ChannelType.GuildCategory) {
       throw new InputError(
-        "The server category was removed. Ask an administrator to run /setup again.",
+        "The server category was removed. Ask an administrator to restart the bot.",
       );
     }
     let channel = server.channelId
@@ -213,7 +214,7 @@ export class DiscordRooms implements Rooms {
     );
     if (!channel) {
       channel = await guild.channels.create({
-        name: `server-${server.instanceId.slice(2)}`,
+        name: server.instanceId,
         topic,
         type: ChannelType.GuildText,
         parent: category.id,
@@ -224,7 +225,7 @@ export class DiscordRooms implements Rooms {
     }
     if (server.channelId !== channel.id) {
       server.channelId = channel.id;
-      server.panelId = null;
+      server.consoleId = server.statusId = server.actionsId = null;
       this.store.save(server);
     }
   }
@@ -232,40 +233,60 @@ export class DiscordRooms implements Rooms {
   private async channel(server: Server): Promise<TextChannel> {
     const guild = await this.client.guilds.fetch(server.guildId);
     const channel = server.channelId
-      ? await guild.channels.fetch(server.channelId)
+      ? await missingAsNull(() => guild.channels.fetch(server.channelId!))
       : null;
     if (!channel || channel.type !== ChannelType.GuildText) {
       throw new InputError(
-        "Your server channel is missing. Click Create server in the lobby to restore it.",
+        "Your server channel expired. Click Open existing in #create-a-server to bring it back.",
       );
     }
     return channel;
   }
-  async panel(
-    server: Server,
-    instance?: Instance,
-    notice?: string,
-    busy = false,
-  ): Promise<void> {
+
+  /**
+   * Console, status, and actions messages, in that order. A missing message is
+   * resent; everything below it is resent too so the order never inverts.
+   */
+  async render(server: Server, view: ChannelView): Promise<void> {
     const channel = await this.channel(server);
-    let message = server.panelId
-      ? await missingAsNull(() => channel.messages.fetch(server.panelId!))
-      : null;
-    if (!message) {
-      message = (await channel.messages.fetch({ limit: 100 })).find((m) =>
-        m.author.id === this.client.user!.id && m.embeds.some((e) =>
-          e.footer?.text === `Pica · ${server.instanceId}`
-        )
-      ) ?? null;
+    const parts = [
+      { key: "consoleId" as const, tag: "console", payload: view.console },
+      { key: "statusId" as const, tag: "status", payload: view.status },
+      { key: "actionsId" as const, tag: "actions", payload: view.actions },
+    ];
+    let history: Collection<string, Message<true>> | undefined;
+    let resend = false;
+    for (const part of parts) {
+      if (!part.payload) continue;
+      let message = !resend && server[part.key]
+        ? await missingAsNull(() => channel.messages.fetch(server[part.key]!))
+        : null;
+      if (!resend && !message) {
+        history ??= await channel.messages.fetch({ limit: 100 });
+        message = history.find((m) =>
+          m.author.id === this.client.user!.id && m.embeds.some((e) =>
+            e.footer?.text === `Pica · ${server.instanceId} · ${part.tag}`
+          )
+        ) ?? null;
+      }
+      if (message && !resend) {
+        await message.edit(part.payload as never);
+        server[part.key] = message.id;
+      } else {
+        // Delete the previous message (and any marker-found duplicate) so the
+        // channel never accumulates orphaned panels with live buttons.
+        const stale = message?.id ?? server[part.key];
+        if (stale) {
+          await missingAsNull(() => channel.messages.delete(stale));
+        }
+        message = await channel.send(part.payload as never);
+        server[part.key] = message.id;
+        resend = true;
+      }
     }
-    if (message) {
-      await message.edit(serverPanel(server, instance, notice, busy));
-    } else {message = await channel.send(
-        serverPanel(server, instance, notice, busy),
-      );}
-    server.panelId = message.id;
     this.store.save(server);
   }
+
   async remove(server: Server): Promise<void> {
     if (!server.channelId) return;
     const guild = await this.client.guilds.fetch(server.guildId);
@@ -274,7 +295,7 @@ export class DiscordRooms implements Rooms {
     );
     if (channel) {
       await channel.delete(
-        "Owner confirmed permanent deletion of their Pica server",
+        "Pica server channel expired or was deleted by its owner",
       );
     }
   }

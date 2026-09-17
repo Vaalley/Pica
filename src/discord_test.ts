@@ -11,7 +11,7 @@ import { Store } from "./store.ts";
 
 type Payload = {
   embeds: { toJSON(): { footer?: { text: string } } }[];
-  components: { toJSON(): { components: { custom_id?: string }[] } }[];
+  components?: { toJSON(): { components: { custom_id?: string }[] } }[];
 };
 type Overwrite = { id: string; allow?: bigint[]; deny?: bigint[] };
 type ChannelOptions = {
@@ -29,14 +29,13 @@ function discordFixture() {
     id = `message-${++sequence}`;
     author = { id: "bot" };
     embeds: { footer?: { text: string } }[] = [];
-    components: { components: { customId?: string }[] }[] = [];
+    deleted = false;
     edit(payload: Payload) {
       this.embeds = payload.embeds.map((e) => e.toJSON());
-      this.components = payload.components.map((r) => ({
-        components: r.toJSON().components.map((c) => ({
-          customId: c.custom_id,
-        })),
-      }));
+      return Promise.resolve(this);
+    }
+    delete() {
+      this.deleted = true;
       return Promise.resolve(this);
     }
   }
@@ -64,6 +63,10 @@ function discordFixture() {
         typeof input === "string"
           ? Promise.resolve(this.history.get(input) ?? null)
           : Promise.resolve(this.history),
+      delete: (id: string) => {
+        this.history.delete(id);
+        return Promise.resolve();
+      },
     };
     async send(payload: Payload) {
       const message = new Message();
@@ -110,22 +113,30 @@ function discordFixture() {
     sent: () => sent,
   };
 }
+const view = (tag: string) => ({
+  embeds: [{ toJSON: () => ({ footer: { text: `Pica · s · ${tag}` } }) }],
+});
+const channelView = () => ({
+  console: view("console"),
+  status: view("status"),
+  actions: view("actions"),
+});
 
-Deno.test("setup and server panels reuse their channels and messages; private room is created with owner-only overwrites", async () => {
+Deno.test("setup and server channels reuse their messages; private room is created with owner-only overwrites", async () => {
   const f = discordFixture();
   try {
     const lobby = await f.rooms.setup(f.guild);
     equal(await f.rooms.setup(f.guild), lobby);
     equal(f.sent(), 1);
-    const server = f.store.reserve("alice", "guild");
+    const server = f.store.reserve("alice", "guild", "wild-willow");
     await f.rooms.ensure(server);
-    await f.rooms.panel(server);
+    await f.rooms.render(server, channelView());
     await f.rooms.ensure(server);
-    await f.rooms.panel(server);
+    await f.rooms.render(server, channelView());
     equal(f.created.length, 3);
-    equal(f.sent(), 2);
+    equal(f.sent(), 4);
     const room = f.created[2];
-    equal(room.name, `server-${server.instanceId.slice(2)}`);
+    equal(room.name, "wild-willow");
     equal(room.parent, f.store.setup("guild")!.categoryId);
     deepStrictEqual(room.permissionOverwrites.map((o) => o.id), [
       "guild",
@@ -134,7 +145,7 @@ Deno.test("setup and server panels reuse their channels and messages; private ro
     ]);
     equal(room.permissionOverwrites[0].deny!.includes(P.ViewChannel), true);
     equal(f.store.owner("alice")!.channelId, server.channelId);
-    equal(f.store.owner("alice")!.panelId, server.panelId);
+    equal(f.store.owner("alice")!.statusId, server.statusId);
   } finally {
     f.store.close();
   }
@@ -144,7 +155,7 @@ Deno.test("a channel created before a failed database write is recovered by its 
   const f = discordFixture();
   try {
     await f.rooms.setup(f.guild);
-    const server = f.store.reserve("alice", "guild");
+    const server = f.store.reserve("alice", "guild", "wild-willow");
     const save = f.store.save.bind(f.store);
     f.store.save = () => {
       throw new Error("simulated interrupted save");
@@ -155,7 +166,7 @@ Deno.test("a channel created before a failed database write is recovered by its 
     const recovered = f.store.owner("alice")!;
     await f.rooms.ensure(recovered);
     equal(f.created.length, 3);
-    equal(recovered.channelId, server.channelId);
+    equal(recovered.channelId, f.store.owner("alice")!.channelId);
   } finally {
     f.store.close();
   }
@@ -165,15 +176,43 @@ Deno.test("removing a Discord channel can be repaired without changing the serve
   const f = discordFixture();
   try {
     await f.rooms.setup(f.guild);
-    const server = f.store.reserve("alice", "guild");
+    const server = f.store.reserve("alice", "guild", "wild-willow");
     await f.rooms.ensure(server);
-    await f.rooms.panel(server);
+    await f.rooms.render(server, channelView());
     const oldChannel = server.channelId!;
     f.channels.delete(oldChannel);
     await f.rooms.ensure(server);
     equal(server.channelId === oldChannel, false);
-    equal(server.panelId, null);
+    equal(server.consoleId, null);
     equal(f.store.owner("alice")!.instanceId, server.instanceId);
+  } finally {
+    f.store.close();
+  }
+});
+
+Deno.test("a deleted status message is resent and everything below it is recreated in order", async () => {
+  const f = discordFixture();
+  try {
+    await f.rooms.setup(f.guild);
+    const server = f.store.reserve("alice", "guild", "wild-willow");
+    await f.rooms.ensure(server);
+    await f.rooms.render(server, channelView());
+    const channel = f.channels.get(server.channelId!)!;
+    const sent = f.sent();
+    const oldActions = server.actionsId!;
+    channel.history.get(server.statusId!)!.deleted = true;
+    channel.history.delete(server.statusId!);
+    await f.rooms.render(server, channelView());
+    // Status and actions are resent; the console message is only edited.
+    equal(f.sent(), sent + 2);
+    // The orphaned actions message is deleted, not left with live buttons.
+    equal(channel.history.has(oldActions), false);
+    const ids = [...channel.history.keys()];
+    equal(
+      ids.indexOf(server.consoleId!) < ids.indexOf(server.statusId!) &&
+        ids.indexOf(server.statusId!) < ids.indexOf(server.actionsId!),
+      true,
+    );
   } finally {
     f.store.close();
   }

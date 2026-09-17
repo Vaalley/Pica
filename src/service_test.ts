@@ -6,7 +6,7 @@ import {
   throws,
 } from "node:assert/strict";
 import { InputError, PicaApiError } from "./api.ts";
-import { Servers } from "./service.ts";
+import { CHANNEL_TTL_MS, Servers } from "./service.ts";
 import { Store } from "./store.ts";
 import { fixture } from "./test_helpers.ts";
 
@@ -20,7 +20,7 @@ Deno.test("a member gets one durable server and private channel; repeated clicks
     equal(f.rooms.created, 1);
     equal(f.requests.filter((r) => r === "/instance/create").length, 1);
     equal(f.store.owner("alice")?.phase, "ready");
-    match(first.instanceId, /^s-[a-f0-9]{20}$/);
+    match(first.instanceId, /^[a-z]+-[a-z]+$/);
   } finally {
     f.store.close();
   }
@@ -129,13 +129,13 @@ Deno.test("capacity failure keeps the channel and reuses its reserved ID on retr
   }
 });
 
-Deno.test("channel panel failure never allocates a replacement server", async () => {
+Deno.test("channel render failure never allocates a replacement server", async () => {
   const f = fixture();
   try {
     await f.service.create("guild", "alice", "ACCEPT");
-    f.rooms.failPanel = true;
+    f.rooms.failRender = true;
     await rejects(() => f.service.create("guild", "alice", "ACCEPT"));
-    f.rooms.failPanel = false;
+    f.rooms.failRender = false;
     await f.service.create("guild", "alice", "ACCEPT");
     equal(f.remote.size, 1);
   } finally {
@@ -168,13 +168,72 @@ Deno.test("deletion preserves ownership on conflict and resumes channel cleanup 
   }
 });
 
+Deno.test("an idle channel expires after one hour and Open existing restores it", async () => {
+  let now = 1_000_000;
+  const f = fixture();
+  const service = new Servers(f.store, f.api, f.rooms, () => now);
+  try {
+    const server = await service.create("guild", "alice", "ACCEPT");
+    equal(server.channelId, "channel-alice");
+    now += CHANNEL_TTL_MS + 1;
+    await service.sweep();
+    equal(f.rooms.removed, 1);
+    equal(f.store.owner("alice")!.channelId, null);
+    const restored = await service.open("guild", "alice");
+    equal(restored.channelId, "channel-alice");
+    equal(f.rooms.created, 2);
+    equal(f.remote.size, 1);
+    await rejects(() => service.open("guild", "bob"), InputError);
+  } finally {
+    f.store.close();
+  }
+});
+
+Deno.test("activity resets the expiry clock and tick skips busy or expired channels", async () => {
+  let now = 1_000_000;
+  const f = fixture();
+  const service = new Servers(f.store, f.api, f.rooms, () => now);
+  try {
+    await service.create("guild", "alice", "ACCEPT");
+    now += CHANNEL_TTL_MS - 1;
+    service.touch("alice");
+    now += 2;
+    await service.sweep();
+    equal(f.rooms.removed, 0);
+    const views = f.rooms.views.length;
+    await service.tick();
+    equal(f.rooms.views.length > views, true);
+    now += CHANNEL_TTL_MS + 1;
+    const before = f.rooms.views.length;
+    await service.tick();
+    equal(f.rooms.views.length, before);
+  } finally {
+    f.store.close();
+  }
+});
+
+Deno.test("setHostname keeps the domain and validates the subdomain", async () => {
+  const f = fixture();
+  try {
+    const server = await f.service.create("guild", "alice", "ACCEPT");
+    await f.service.setHostname(server, "wild-willow");
+    equal(f.store.owner("alice")!.hostname, "wild-willow.pica.host");
+    await rejects(
+      () => f.service.setHostname(server, "Bad_Name"),
+      InputError,
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
 Deno.test("ownership and setup survive closing and reopening the SQLite database", () => {
   Deno.mkdirSync("data", { recursive: true });
   const path = `data/test-${crypto.randomUUID()}.sqlite`;
   let db: Store | undefined;
   try {
     db = new Store(path);
-    const server = db.reserve("alice", "guild");
+    const server = db.reserve("alice", "guild", "wild-willow");
     server.channelId = "private-channel";
     server.phase = "ready";
     db.save(server);

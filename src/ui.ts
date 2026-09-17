@@ -3,9 +3,9 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  FileUploadBuilder,
   LabelBuilder,
   ModalBuilder,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -13,164 +13,202 @@ import { type Instance } from "./api.ts";
 import { bytes, code } from "./common.ts";
 import { type Server } from "./store.ts";
 
+const COLOR = 0x65c9a5;
 function button(action: string, label: string, style = ButtonStyle.Secondary) {
   return new ButtonBuilder().setCustomId(`pica:${action}`).setLabel(label)
     .setStyle(style);
 }
+function marker(server: Server, part: string) {
+  return `Pica · ${server.instanceId} · ${part}`;
+}
+const silent = { allowedMentions: { parse: [] as never[] } };
+
 export function lobbyPanel() {
   return {
     embeds: [
-      new EmbedBuilder().setColor(0x65c9a5).setTitle(
+      new EmbedBuilder().setColor(COLOR).setTitle(
         "Your own Minecraft server",
       )
         .setDescription(
-          "Create your server and get a private channel to manage it.\n\nOne server per person. Start, stop, restart, and upload files from your channel.",
+          "Create your server and get a private channel to manage it.\n\n" +
+            "One server per person. Channels expire one hour after you last use them — " +
+            "**Open existing** brings yours back with everything intact.",
         )
         .addFields({
           name: "Before you create",
           value:
-            "You’ll be asked to accept the [Minecraft EULA](https://www.minecraft.net/eula).",
+            "You'll be asked to accept the [Minecraft EULA](https://www.minecraft.net/eula).",
         })
         .setFooter({ text: "Pica · Personal Minecraft hosting" }),
     ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         button("create", "Create server", ButtonStyle.Success),
+        button("open", "Open existing"),
       ),
     ],
-    allowedMentions: { parse: [] as never[] },
+    ...silent,
   };
 }
-export function serverPanel(
+
+export function consoleMessage(server: Server, lines?: string[]) {
+  const embed = new EmbedBuilder().setColor(COLOR).setTitle("Console")
+    .setFooter({ text: marker(server, "console") }).setTimestamp();
+  const text = lines === undefined
+    ? "Console unavailable."
+    : lines.length
+    ? `\`\`\`text\n${
+      lines.slice(-15).join("\n").replaceAll("```", "ˋˋˋ").slice(-3800)
+    }\n\`\`\``
+    : "No console output yet.";
+  embed.setDescription(text);
+  return { embeds: [embed], components: [], ...silent };
+}
+
+export function statusMessage(
   server: Server,
   instance?: Instance,
+  online?: boolean,
   notice?: string,
   busy = false,
 ) {
-  const embed = new EmbedBuilder().setColor(0x65c9a5).setTitle(
-    "Your Minecraft server",
-  )
-    .setFooter({ text: `Pica · ${server.instanceId}` }).setTimestamp();
+  const embed = new EmbedBuilder().setColor(COLOR).setTitle("Server status")
+    .setFooter({ text: marker(server, "status") }).setTimestamp();
+  const row = new ActionRowBuilder<ButtonBuilder>();
   if (server.phase === "provisioning") {
     embed.setDescription(
       notice ??
         "This is your private server channel. Use **Finish setup** to continue creating your Minecraft server.",
     );
-    return {
-      embeds: [embed],
-      components: [
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-          button(
-            "retry",
-            busy ? "Creating server…" : "Finish setup",
-            ButtonStyle.Primary,
-          ).setDisabled(busy),
-        ),
-      ],
-      allowedMentions: { parse: [] as never[] },
-    };
+    row.addComponents(
+      button(
+        "retry",
+        busy ? "Creating server…" : "Finish setup",
+        ButtonStyle.Primary,
+      ).setDisabled(busy),
+    );
+    return { embeds: [embed], components: [row], ...silent };
   }
   if (server.phase === "deleting" || server.phase === "deleted") {
     embed.setDescription(
       notice ??
         "Server deletion needs to finish. Use **Finish deletion** to resume. This permanently removes the server files and this channel.",
     );
-    return {
-      embeds: [embed],
-      components: [
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-          button(
-            "delete",
-            busy ? "Deleting…" : "Finish deletion",
-            ButtonStyle.Danger,
-          ).setDisabled(busy),
-        ),
-      ],
-      allowedMentions: { parse: [] as never[] },
-    };
+    row.addComponents(
+      button(
+        "delete",
+        busy ? "Deleting…" : "Finish deletion",
+        ButtonStyle.Danger,
+      ).setDisabled(busy),
+    );
+    return { embeds: [embed], components: [row], ...silent };
   }
   embed.setDescription(
     [
       notice,
-      busy
-        ? "Please wait. This can take up to three minutes."
-        : "Manage your server below. Upload files, change server software, or open the console without leaving Discord.",
-    ].filter(Boolean).join("\n\n"),
+      busy ? "Please wait. This can take up to three minutes." : null,
+    ].filter(Boolean).join("\n\n") || null,
   );
-  if (instance?.hostname || server.hostname) {
+  embed.addFields(
+    {
+      name: "State",
+      value: online === undefined ? "Unknown" : online ? "Online" : "Offline",
+      inline: true,
+    },
+    {
+      name: "Address",
+      value: code(instance?.hostname ?? server.hostname ?? "pending"),
+      inline: true,
+    },
+    {
+      name: "Connections",
+      value: `${instance?.connections ?? 0} TCP sessions`,
+      inline: true,
+    },
+    {
+      name: "Storage",
+      value: `${bytes(instance?.usedBytes ?? 0)} / ${
+        bytes(instance?.storageLimitBytes ?? 0)
+      }`,
+      inline: true,
+    },
+  );
+  if (instance?.storageBlocked) {
     embed.addFields({
-      name: "Join address",
-      value: code(instance?.hostname ?? server.hostname!),
+      name: "⚠️ Storage is full",
+      value: "Open **File Manager** below to delete unneeded files.",
     });
   }
-  if (instance) {
-    embed.addFields(
-      {
-        name: "Connections",
-        value: `${instance.connections} TCP sessions`,
-        inline: true,
-      },
-      {
-        name: "Storage",
-        value: `${bytes(instance.usedBytes)} / ${
-          bytes(instance.storageLimitBytes)
-        }`,
-        inline: true,
-      },
-    );
-    if (instance.storageBlocked) {
-      embed.addFields({
-        name: "⚠️ Storage is full",
-        value:
-          "Open **Files** to find unneeded files, then use `/files delete` to free space. File management remains available.",
-      });
-    }
-    if (instance.restartRequired) {
-      embed.addFields({
-        name: "Restart needed",
-        value: "Your server software changed. Click Restart to apply it.",
-      });
-    }
+  if (instance?.restartRequired) {
+    embed.addFields({
+      name: "Restart needed",
+      value: "Your server software changed. Click Restart to apply it.",
+    });
   }
-  return {
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        button("start", "Start", ButtonStyle.Success),
-        button("stop", "Stop"),
-        button("restart", "Restart", ButtonStyle.Primary),
-        button("status", "Refresh"),
-      ),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        button("console", "Console"),
-        button("files", "Files"),
-        button("upload", "Upload"),
-        button("software", "Server software"),
-      ),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        button("delete", "Delete server", ButtonStyle.Danger),
-      ),
-    ].map((row) => {
-      for (const component of row.components) component.setDisabled(busy);
-      return row;
-    }),
-    allowedMentions: { parse: [] as never[] },
-  };
+  if (online === false) {
+    row.addComponents(button("start", "Start", ButtonStyle.Success));
+  } else if (online === true) {
+    row.addComponents(
+      button("stop", "Stop"),
+      button("restart", "Restart", ButtonStyle.Primary),
+    );
+  } else {
+    row.addComponents(
+      button("start", "Start", ButtonStyle.Success),
+      button("stop", "Stop"),
+      button("restart", "Restart", ButtonStyle.Primary),
+    );
+  }
+  for (const component of row.components) component.setDisabled(busy);
+  return { embeds: [embed], components: [row], ...silent };
 }
-export function textModal(
+
+export function actionsMessage(server: Server, busy = false) {
+  const embed = new EmbedBuilder().setColor(COLOR).setTitle(
+    "Additional actions",
+  ).setFooter({ text: marker(server, "actions") });
+  if (server.phase !== "ready") {
+    embed.setDescription("Available once your server is ready.");
+    return { embeds: [embed], components: [], ...silent };
+  }
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  const modded = server.software === "fabric";
+  embed.setDescription(
+    "Files, mods, server software, and your join address. " +
+      "The file manager link works until this channel expires.",
+  );
+  row.addComponents(
+    button("files", "File Manager"),
+    button("install", modded ? "Install mod" : "Install mod or plugin"),
+    button("software", "Change software"),
+    button("ip", "Change IP"),
+    button("delete", "Delete server", ButtonStyle.Danger),
+  );
+  for (const component of row.components) component.setDisabled(busy);
+  return { embeds: [embed], components: [row], ...silent };
+}
+
+export function inputModal(
   customId: string,
   title: string,
+  field: string,
   label: string,
+  description: string,
   placeholder: string,
+  maxLength = 100,
 ) {
-  return new ModalBuilder().setCustomId(customId).setTitle(title).addComponents(
-    new ActionRowBuilder<TextInputBuilder>().addComponents(
-      new TextInputBuilder().setCustomId("confirmation").setLabel(label)
-        .setPlaceholder(placeholder)
-        .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20),
-    ),
-  );
+  return new ModalBuilder().setCustomId(customId).setTitle(title)
+    .addLabelComponents(
+      new LabelBuilder().setLabel(label).setDescription(description)
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId(field).setStyle(
+            TextInputStyle.Short,
+          ).setPlaceholder(placeholder).setRequired(true)
+            .setMaxLength(maxLength),
+        ),
+    );
 }
+
 export function confirmationButtons(token: string) {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     button(`confirm:${token}`, "Confirm", ButtonStyle.Danger),
@@ -178,70 +216,92 @@ export function confirmationButtons(token: string) {
   )];
 }
 
-export function uploadModal(software: boolean) {
-  const modal = new ModalBuilder().setCustomId(
-    software ? "pica:software-submit" : "pica:upload-submit",
-  )
-    .setTitle(software ? "Install server software" : "Upload a file");
-  if (!software) {
-    modal.addLabelComponents(
-      new LabelBuilder().setLabel("Destination path")
-        .setDescription(
-          "Relative to your Minecraft server, using / between folders.",
-        )
-        .setTextInputComponent(
-          new TextInputBuilder().setCustomId("path").setStyle(
-            TextInputStyle.Short,
-          ).setPlaceholder("plugins/MyPlugin.jar").setRequired(true)
-            .setMaxLength(512),
-        ),
-    );
-  }
-  modal.addLabelComponents(
-    new LabelBuilder().setLabel(software ? "Minecraft server JAR" : "File")
-      .setDescription(
-        software
-          ? "Installed as boot.jar. Must support Java 25 and port 25565."
-          : "Up to 128 MiB. Discord's upload limit also applies.",
-      )
-      .setFileUploadComponent(
-        new FileUploadBuilder().setCustomId("file").setMinValues(1)
-          .setMaxValues(1).setRequired(true),
-      ),
-    new LabelBuilder().setLabel("Confirm replacement")
-      .setDescription("Type REPLACE to allow overwriting the destination file.")
-      .setTextInputComponent(
-        new TextInputBuilder().setCustomId("confirmation").setStyle(
-          TextInputStyle.Short,
-        ).setPlaceholder("REPLACE").setRequired(true).setMaxLength(20),
-      ),
+export function consoleModal() {
+  return inputModal(
+    "pica:command-submit",
+    "Run a Minecraft command",
+    "command",
+    "Command",
+    "One command, without a leading /. Example: say Hello everyone",
+    "say Hello everyone",
+    4096,
   );
-  return modal;
 }
 
-export function consoleModal() {
-  return new ModalBuilder().setCustomId("pica:command-submit").setTitle(
-    "Run a Minecraft command",
-  )
-    .addLabelComponents(
-      new LabelBuilder().setLabel("Command").setDescription(
-        "One command, without a leading /. Example: say Hello everyone",
-      )
-        .setTextInputComponent(
-          new TextInputBuilder().setCustomId("command").setStyle(
-            TextInputStyle.Short,
-          ).setRequired(true).setMaxLength(4096),
-        ),
-    );
+export function softwareSelect() {
+  return {
+    content: "Choose your new server software. This replaces boot.jar.",
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder().setCustomId("pica:software-pick")
+          .setPlaceholder("Server software")
+          .addOptions(
+            {
+              label: "Vanilla",
+              value: "vanilla",
+              description: "Official Mojang server",
+            },
+            {
+              label: "Paper",
+              value: "paper",
+              description: "Plugins, high performance",
+            },
+            {
+              label: "Purpur",
+              value: "purpur",
+              description: "Paper fork with extra settings",
+            },
+            {
+              label: "Fabric",
+              value: "fabric",
+              description: "Lightweight mod loader",
+            },
+          ),
+      ),
+    ],
+  };
 }
-export function consoleButtons() {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      button("console", "Refresh console"),
-      button("command", "Run command", ButtonStyle.Primary),
-    ),
-  ];
+
+export function versionSelect(software: string, versions: string[]) {
+  return {
+    content: `Choose a ${software} version.`,
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder().setCustomId(
+          `pica:version-pick:${software}`,
+        ).setPlaceholder("Minecraft version")
+          .addOptions(
+            versions.slice(0, 25).map((v) => ({ label: v, value: v })),
+          ),
+      ),
+    ],
+  };
 }
+
+export function addonSelect(
+  token: string,
+  results: { name: string; description: string; downloads: number }[],
+) {
+  return {
+    content: "Choose what to install.",
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`pica:addon-pick:${token}`)
+          .setPlaceholder("Search results")
+          .addOptions(
+            results.slice(0, 25).map((r, i) => ({
+              label: r.name.slice(0, 100),
+              value: String(i),
+              description:
+                `${r.description} · ${r.downloads.toLocaleString()} downloads`
+                  .slice(0, 100),
+            })),
+          ),
+      ),
+    ],
+  };
+}
+
 export function restartButton() {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(

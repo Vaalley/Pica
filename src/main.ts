@@ -1,10 +1,11 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
 import { PicaApi } from "./api.ts";
-import { commands } from "./commands.ts";
+import { Catalogs } from "./catalogs.ts";
 import { createHandler } from "./handler.ts";
+import { FileManager } from "./filemanager.ts";
 import { Store } from "./store.ts";
 import { DiscordRooms } from "./discord.ts";
-import { Servers } from "./service.ts";
+import { Servers, TICK_MS } from "./service.ts";
 
 const token = Deno.env.get("DISCORD_TOKEN");
 if (!token) throw new Error("Set DISCORD_TOKEN in .env before starting Pica.");
@@ -29,30 +30,36 @@ Deno.mkdirSync("data", { recursive: true });
 const store = new Store("data/pica.sqlite");
 const rooms = new DiscordRooms(client, store);
 const servers = new Servers(store, api, rooms);
-const handle = createHandler(servers, rooms, guilds);
+const catalogs = new Catalogs();
+const files = new FileManager(
+  api,
+  Deno.env.get("PICA_FILES_URL") ?? "http://127.0.0.1:8092",
+  (ownerId) => servers.touch(ownerId),
+);
+servers.sessions = files;
+const handle = createHandler(servers, guilds, catalogs, files);
 client.once(Events.ClientReady, async (readyClient) => {
   try {
     for (const guildId of guilds) {
       const guild = await readyClient.guilds.fetch(guildId);
-      for (const command of commands) {
-        await guild.commands.create(command.toJSON());
-      }
-      // Retire the old administrator API command after the personal commands exist.
+      await rooms.setup(guild);
+      // Personal servers are button-driven; retire every slash command.
       for (const command of (await guild.commands.fetch()).values()) {
-        if (command.name === "pica") await command.delete();
+        await command.delete();
       }
     }
-    // Remove the starter's obsolete global /pica after guild commands succeed.
     const globalCommands = await readyClient.application.commands.fetch();
-    for (const command of globalCommands.values()) {
-      if (command.name === "pica") await command.delete();
-    }
+    for (const command of globalCommands.values()) await command.delete();
+    servers.resume();
+    setInterval(() => {
+      void servers.maintain();
+    }, TICK_MS);
     console.log(
       `Pica is online as ${readyClient.user.tag}; registered in ${guilds.size} configured guild(s).`,
     );
   } catch {
     console.error(
-      "Failed to register Pica commands. Check guild IDs, bot installation, and applications.commands scope.",
+      "Pica setup failed. Check guild IDs, bot installation, and channel permissions.",
     );
     await client.destroy();
     Deno.exit(1);
@@ -60,8 +67,8 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 client.on(Events.InteractionCreate, async (interaction) => {
   if (
-    !interaction.isChatInputCommand() && !interaction.isButton() &&
-    !interaction.isModalSubmit()
+    !interaction.isButton() && !interaction.isModalSubmit() &&
+    !interaction.isStringSelectMenu()
   ) return;
   try {
     await handle(interaction);
@@ -84,6 +91,10 @@ if (Deno.build.os !== "windows") {
     void client.destroy();
   });
 }
+Deno.serve(
+  { port: Number(Deno.env.get("PICA_FILES_PORT") ?? "8092") },
+  files.handler(),
+);
 try {
   await client.login(token);
 } catch {

@@ -143,12 +143,13 @@ export class PicaApi {
     path: string,
     fields: Record<string, unknown> = {},
     form?: FormData,
+    timeoutMs = 180_000,
   ): Promise<Response> {
     const response = await this.request(`${this.url}${path}`, {
       method: "POST",
       headers: form ? undefined : { "Content-Type": "application/json" },
       body: form ?? JSON.stringify({ ...fields, secret: this.secret }),
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: "error",
     });
     if (!response.ok) {
@@ -164,14 +165,13 @@ export class PicaApi {
     }
     return response;
   }
-
   private async json<T>(
     path: string,
     fields: Record<string, unknown> = {},
+    timeoutMs?: number,
   ): Promise<T> {
-    return await (await this.post(path, fields)).json();
+    return await (await this.post(path, fields, undefined, timeoutMs)).json();
   }
-
   list(): Promise<InstanceList> {
     return this.json("/instance/list");
   }
@@ -187,11 +187,12 @@ export class PicaApi {
   instance(
     id: string,
     action: "status" | "start" | "stop" | "restart" | "delete",
+    timeoutMs?: number,
   ): Promise<Instance> {
-    return this.json(this.route(id, action));
+    return this.json(this.route(id, action), {}, timeoutMs);
   }
-  tail(id: string): Promise<{ lines: string[] }> {
-    return this.json(this.route(id, "tail"));
+  tail(id: string, timeoutMs?: number): Promise<{ lines: string[] }> {
+    return this.json(this.route(id, "tail"), {}, timeoutMs);
   }
   run(id: string, command: string): Promise<{ ok: true; response?: string }> {
     return this.json(this.route(id, "run"), {
