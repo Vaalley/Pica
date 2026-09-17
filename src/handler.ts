@@ -307,6 +307,11 @@ export function createHandler(
       if (action === "install-submit" && interaction.isModalSubmit()) {
         servers.ready(server);
         const query = interaction.fields.getTextInputValue("query").trim();
+        if (server.software === "vanilla") {
+          throw new InputError(
+            "Vanilla can't load mods or plugins. Use Change software first.",
+          );
+        }
         const modded = server.software === "fabric";
         const results = server.software
           ? await catalogs.searchAddons(modded ? "mod" : "plugin", query)

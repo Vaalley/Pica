@@ -385,7 +385,7 @@ export class Catalogs {
     try {
       res = await this.request(file.url, {
         headers: UA,
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(300_000),
       });
     } catch {
       throw new InputError("The download is unavailable.");

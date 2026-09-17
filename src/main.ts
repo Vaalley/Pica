@@ -92,7 +92,10 @@ if (Deno.build.os !== "windows") {
   });
 }
 Deno.serve(
-  { port: Number(Deno.env.get("PICA_FILES_PORT") ?? "8092") },
+  {
+    hostname: Deno.env.get("PICA_FILES_HOST") ?? "127.0.0.1",
+    port: Number(Deno.env.get("PICA_FILES_PORT") ?? "8092"),
+  },
   files.handler(),
 );
 try {

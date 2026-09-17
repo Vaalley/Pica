@@ -326,6 +326,23 @@ export class Servers {
           console.error("Could not read the server console.");
         }
       }
+      if (!server.software) {
+        try {
+          const root = await this.api.files(server.instanceId, "");
+          const dirs = new Set(
+            root.entries.filter((e) => e.directory).map((e) => e.name),
+          );
+          // The backend reports no software type; infer it from the layout.
+          server.software = dirs.has("mods")
+            ? "fabric"
+            : dirs.has("plugins")
+            ? "paper"
+            : "vanilla";
+          this.store.save(server);
+        } catch {
+          console.error("Could not detect the server software.");
+        }
+      }
     }
     await this.rooms.render(server, {
       console: consoleMessage(server, lines),

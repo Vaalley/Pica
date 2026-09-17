@@ -172,14 +172,19 @@ export function actionsMessage(server: Server, busy = false) {
     return { embeds: [embed], components: [], ...silent };
   }
   const row = new ActionRowBuilder<ButtonBuilder>();
-  const modded = server.software === "fabric";
   embed.setDescription(
-    "Files, mods, server software, and your join address. " +
+    "Files, server software, and your join address. " +
       "The file manager link works until this channel expires.",
   );
+  row.addComponents(button("files", "File Manager"));
+  if (server.software === "fabric") {
+    row.addComponents(button("install", "Install mod"));
+  } else if (server.software === "paper" || server.software === "purpur") {
+    row.addComponents(button("install", "Install plugin"));
+  } else if (server.software !== "vanilla") {
+    row.addComponents(button("install", "Install mod or plugin"));
+  }
   row.addComponents(
-    button("files", "File Manager"),
-    button("install", modded ? "Install mod" : "Install mod or plugin"),
     button("software", "Change software"),
     button("ip", "Change IP"),
     button("delete", "Delete server", ButtonStyle.Danger),
