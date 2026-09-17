@@ -51,6 +51,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     const globalCommands = await readyClient.application.commands.fetch();
     for (const command of globalCommands.values()) await command.delete();
     servers.resume();
+    await servers.maintain();
     setInterval(() => {
       void servers.maintain();
     }, TICK_MS);
