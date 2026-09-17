@@ -377,6 +377,8 @@ export class Catalogs {
           filename: `fabric-server-${version}.jar`,
         };
       }
+      default:
+        throw new InputError(`Unknown server software ${software}.`);
     }
   }
 

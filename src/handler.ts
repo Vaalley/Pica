@@ -373,7 +373,7 @@ export function createHandler(
           throw new InputError("Choose a software from the list.");
         }
         const versions = await catalogs.softwareVersions(software);
-        const menu = versionSelect(SOFTWARE[software], versions);
+        const menu = versionSelect(software, SOFTWARE[software], versions);
         await interaction.editReply({
           content: api.redact(menu.content),
           components: menu.components,
@@ -384,6 +384,9 @@ export function createHandler(
       if (action === "version-pick" && interaction.isStringSelectMenu()) {
         servers.ready(server);
         const software = customId.split(":")[2] as keyof typeof SOFTWARE;
+        if (!(software in SOFTWARE)) {
+          throw new InputError("Choose a software from the list.");
+        }
         const version = interaction.values[0];
         const file = await catalogs.softwareJar(software, version);
         const data = await catalogs.download(file);

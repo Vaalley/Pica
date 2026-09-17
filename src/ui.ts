@@ -267,9 +267,13 @@ export function softwareSelect() {
   };
 }
 
-export function versionSelect(software: string, versions: string[]) {
+export function versionSelect(
+  software: string,
+  name: string,
+  versions: string[],
+) {
   return {
-    content: `Choose a ${software} version.`,
+    content: `Choose a ${name} version.`,
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder().setCustomId(
