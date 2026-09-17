@@ -18,6 +18,7 @@ export interface Rooms {
   remove(server: Server): Promise<void>;
 }
 export interface Sessions {
+  issue(ownerId: string, instanceId: string): string;
   revoke(ownerId: string): void;
 }
 
@@ -228,30 +229,31 @@ export class Servers {
     });
   }
 
-  async command(server: Server, command: string): Promise<string> {
-    return await this.locks.run(server.ownerId, async () => {
+  async command(server: Server, command: string): Promise<void> {
+    await this.locks.run(server.ownerId, async () => {
       this.ready(server);
       this.touch(server.ownerId);
-      const result = await this.api.run(server.instanceId, command);
+      await this.api.run(server.instanceId, command);
       await this.paint(server);
-      return result.response || "Command completed with no output.";
     });
   }
 
-  /** Bot-downloaded file (software JAR, mod, plugin) written through the fs API. */
+  /** Download and write server software, mods, or plugins under one operation lock. */
   async installFile(
     server: Server,
     path: string,
-    data: Uint8Array,
     filename: string,
+    download: () => Promise<Uint8Array>,
     notice: string,
     software?: string,
   ): Promise<void> {
     await this.locks.run(server.ownerId, async () => {
       this.ready(server);
       this.touch(server.ownerId);
-      await this.paint(server, `Installing ${filename}…`, true);
+      await this.paint(server, `Downloading ${filename}…`, true);
       try {
+        const data = await download();
+        await this.paint(server, `Installing ${filename}…`, true);
         const result = await this.api.write(
           server.instanceId,
           path,
@@ -277,18 +279,16 @@ export class Servers {
     });
   }
 
-  /** Mocked until the backend exposes a hostname route: stored locally only. */
+  /** Change the join subdomain through Pica and persist its returned hostname. */
   async setHostname(server: Server, subdomain: string): Promise<void> {
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(subdomain)) {
-      throw new InputError(
-        "Subdomain must be 1–32 lowercase letters, digits, or internal hyphens.",
-      );
-    }
     await this.locks.run(server.ownerId, async () => {
       this.ready(server);
       this.touch(server.ownerId);
-      const domain = (server.hostname ?? "").split(".").slice(1).join(".");
-      server.hostname = domain ? `${subdomain}.${domain}` : subdomain;
+      const instance = await this.api.changeSubdomain(
+        server.instanceId,
+        subdomain,
+      );
+      server.hostname = instance.hostname;
       this.store.save(server);
       await this.paint(server);
     });
@@ -310,7 +310,7 @@ export class Servers {
           "status",
           timeoutMs,
         );
-        // server.hostname is owner-set (mocked Change IP); never overwrite it here.
+        // Preserve the hostname returned by change-subdomain while status catches up.
         this.snapshots.set(server.instanceId, instance);
       } catch {
         console.error("Could not refresh server details.");
@@ -344,8 +344,11 @@ export class Servers {
         }
       }
     }
+    const fileManagerUrl = server.phase === "ready"
+      ? this.sessions?.issue(server.ownerId, server.instanceId)
+      : undefined;
     await this.rooms.render(server, {
-      console: consoleMessage(server, lines),
+      console: consoleMessage(server, lines, busy),
       status: statusMessage(
         server,
         instance,
@@ -353,7 +356,7 @@ export class Servers {
         notice,
         busy,
       ),
-      actions: actionsMessage(server, busy),
+      actions: actionsMessage(server, fileManagerUrl, busy),
     });
   }
 

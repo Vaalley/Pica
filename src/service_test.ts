@@ -212,12 +212,16 @@ Deno.test("activity resets the expiry clock and tick skips busy or expired chann
   }
 });
 
-Deno.test("setHostname keeps the domain and validates the subdomain", async () => {
+Deno.test("setHostname validates and persists Pica's returned hostname", async () => {
   const f = fixture();
   try {
     const server = await f.service.create("guild", "alice", "ACCEPT");
     await f.service.setHostname(server, "wild-willow");
     equal(f.store.owner("alice")!.hostname, "wild-willow.pica.host");
+    equal(
+      f.requests.includes(`/instance/${server.instanceId}/change-subdomain`),
+      true,
+    );
     await rejects(
       () => f.service.setHostname(server, "Bad_Name"),
       InputError,

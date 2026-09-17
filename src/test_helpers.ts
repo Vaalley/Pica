@@ -82,6 +82,10 @@ export function fixture(): Fixture {
       const value = remote.get(id);
       if (!value) return Response.json({ error: "missing" }, { status: 404 });
       if (path.endsWith("/delete")) remote.delete(id);
+      if (path.endsWith("/change-subdomain")) {
+        const body = JSON.parse(String(init?.body));
+        value.hostname = `${body.subdomain}.pica.host`;
+      }
       if (path.endsWith("/tail")) return Response.json({ lines: ["log"] });
       await Promise.resolve();
       return Response.json(value);

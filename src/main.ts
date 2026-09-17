@@ -37,7 +37,7 @@ const files = new FileManager(
   (ownerId) => servers.touch(ownerId),
 );
 servers.sessions = files;
-const handle = createHandler(servers, guilds, catalogs, files);
+const handle = createHandler(servers, guilds, catalogs);
 client.once(Events.ClientReady, async (readyClient) => {
   try {
     for (const guildId of guilds) {

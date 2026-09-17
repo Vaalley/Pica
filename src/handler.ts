@@ -1,23 +1,18 @@
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   ButtonBuilder,
   type ButtonInteraction,
-  ButtonStyle,
   MessageFlags,
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
 } from "discord.js";
-import { Buffer } from "node:buffer";
 import { type AddonResult, Catalogs, SOFTWARE } from "./catalogs.ts";
 import { InputError, PicaApiError } from "./api.ts";
-import { code, errorMessage } from "./common.ts";
+import { errorMessage } from "./common.ts";
 import { Confirmations } from "./confirmations.ts";
-import { FileManager } from "./filemanager.ts";
 import { Servers } from "./service.ts";
 import {
   addonSelect,
-  confirmationButtons,
   consoleModal,
   inputModal,
   softwareSelect,
@@ -33,7 +28,6 @@ export function createHandler(
   servers: Servers,
   guilds: ReadonlySet<string>,
   catalogs: Catalogs,
-  files: FileManager,
 ) {
   const confirmations = new Confirmations();
   const searches = new Map<
@@ -57,40 +51,6 @@ export function createHandler(
         await interaction.editReply(payload);
       } else {
         await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
-      }
-    };
-    const output = async (title: string, text: string) => {
-      text = api.redact(text);
-      const budget = Math.max(100, 1850 - title.length);
-      if (text.length <= budget) {
-        await respond(
-          `${title}\n\`\`\`text\n${text.replaceAll("```", "ˋˋˋ")}\n\`\`\``,
-        );
-      } else if (Buffer.byteLength(text) <= interaction.attachmentSizeLimit) {
-        const payload = {
-          content: title,
-          components: [],
-          files: [
-            new AttachmentBuilder(Buffer.from(text), {
-              name: "server-output.txt",
-            }),
-          ],
-          allowedMentions: { parse: [] as never[] },
-        };
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply(payload);
-        } else {
-          await interaction.reply({
-            ...payload,
-            flags: MessageFlags.Ephemeral,
-          });
-        }
-      } else {
-        await respond(
-          `${title}\nOutput is too large; showing the end:\n\`\`\`text\n${
-            text.slice(-Math.max(100, budget - 80)).replaceAll("```", "ˋˋˋ")
-          }\n\`\`\``,
-        );
       }
     };
     try {
@@ -208,37 +168,22 @@ export function createHandler(
         return;
       }
       if (action === "restart" || action === "stop") {
+        if (!interaction.isButton()) {
+          throw new InputError("Use the server controls in your channel.");
+        }
         servers.ready(server);
         const token = confirmations.issue(server, action);
-        await interaction.reply({
-          content: action === "restart"
-            ? "Restart your server now? Connected players will be disconnected."
-            : "Stop your server now? Connected players will be disconnected.",
-          components: confirmationButtons(token),
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      if (action === "confirm" || action === "cancel") {
-        const confirmed = confirmations.consume(customId.split(":")[2], server);
-        if (!interaction.isButton()) {
-          throw new InputError("Use the confirmation buttons.");
-        }
-        await interaction.update({
-          content: action === "cancel"
-            ? "Canceled."
-            : "Working on your server…",
-          components: [],
-        });
-        if (action === "cancel") return;
-        if (confirmed === "delete") {
-          throw new InputError("Use the delete confirmation form.");
-        }
-        await servers.action(server, confirmed);
-        await respond(
-          confirmed === "stop"
-            ? "Minecraft stopped. Click Start when you're ready to play again."
-            : "Your server has restarted. You can rejoin now.",
+        const verb = action.toUpperCase();
+        await interaction.showModal(
+          inputModal(
+            `pica:action-submit:${token}`,
+            `${action === "restart" ? "Restart" : "Stop"} your server?`,
+            "confirmation",
+            `Type ${verb} to confirm`,
+            "Connected players will be disconnected.",
+            verb,
+            20,
+          ),
         );
         return;
       }
@@ -246,9 +191,35 @@ export function createHandler(
         (interaction.isButton() || interaction.isStringSelectMenu()) &&
         interaction.message.flags?.has(MessageFlags.Ephemeral)
       ) {
-        await interaction.deferUpdate();
+        if (
+          interaction.isStringSelectMenu() &&
+          ["addon-pick", "version-pick"].includes(action)
+        ) {
+          await interaction.update({
+            content: "Downloading and installing…",
+            components: [],
+            allowedMentions: { parse: [] as never[] },
+          });
+        } else {
+          await interaction.deferUpdate();
+        }
       } else {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
+      if (action === "action-submit" && interaction.isModalSubmit()) {
+        const confirmed = confirmations.consume(customId.split(":")[2], server);
+        if (confirmed === "delete") {
+          throw new InputError("Use the delete confirmation form.");
+        }
+        if (
+          interaction.fields.getTextInputValue("confirmation").trim() !==
+            confirmed.toUpperCase()
+        ) {
+          throw new InputError(`Type ${confirmed.toUpperCase()} to confirm.`);
+        }
+        await servers.action(server, confirmed);
+        await respond("Server updated.");
+        return;
       }
       if (action === "delete-submit" && interaction.isModalSubmit()) {
         if (
@@ -269,39 +240,22 @@ export function createHandler(
         return;
       }
       if (action === "start") {
-        const instance = await servers.action(server, "start");
-        await respond(
-          `Your server is ready! Join ${
-            code(server.hostname ?? instance.hostname)
-          }.`,
-        );
-        return;
-      }
-      if (action === "files") {
-        servers.ready(server);
-        const url = files.issue(ownerId, server.instanceId);
-        const link = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(url)
-            .setLabel("Open File Manager"),
-        );
-        await respond(
-          "Your file manager is ready. The link works until this channel expires.",
-          [link],
-        );
+        await servers.action(server, "start");
+        await respond("Server started.");
         return;
       }
       if (action === "ip-submit" && interaction.isModalSubmit()) {
         const subdomain = interaction.fields.getTextInputValue("subdomain")
           .trim().toLowerCase();
         await servers.setHostname(server, subdomain);
-        await respond(`Your join address is now ${code(server.hostname!)}.`);
+        await respond("Join address updated.");
         return;
       }
       if (action === "command-submit" && interaction.isModalSubmit()) {
         servers.ready(server);
         const command = interaction.fields.getTextInputValue("command");
-        const response = await servers.command(server, command);
-        await output("Console response", response);
+        await servers.command(server, command);
+        await respond("Command sent. The console panel above has refreshed.");
         return;
       }
       if (action === "install-submit" && interaction.isModalSubmit()) {
@@ -354,16 +308,15 @@ export function createHandler(
         searches.delete(customId.split(":")[2]);
         const loader = server.software === "fabric" ? "fabric" : undefined;
         const file = await catalogs.addonFile(result, undefined, loader);
-        const data = await catalogs.download(file);
         const dir = result.source === "modrinth" ? "mods" : "plugins";
         await servers.installFile(
           server,
           `${dir}/${file.filename}`,
-          data,
           file.filename,
+          () => catalogs.download(file),
           `Installed ${result.name}.`,
         );
-        await respond(`Installed ${result.name} to ${code(dir + "/")}.`);
+        await respond("Server software updated.");
         return;
       }
       if (action === "software-pick" && interaction.isStringSelectMenu()) {
@@ -389,18 +342,15 @@ export function createHandler(
         }
         const version = interaction.values[0];
         const file = await catalogs.softwareJar(software, version);
-        const data = await catalogs.download(file);
         await servers.installFile(
           server,
           "boot.jar",
-          data,
           file.filename,
+          () => catalogs.download(file),
           `Installed ${SOFTWARE[software]} ${version}.`,
           software,
         );
-        await respond(
-          `Installed ${SOFTWARE[software]} ${version}. Restart to apply it.`,
-        );
+        await respond("Server software updated.");
         return;
       }
       throw new InputError("Use the controls in your server channel.");

@@ -41,6 +41,8 @@ Deno.test("issue returns a URL whose token authenticates and slides expiry", asy
   equal(url.startsWith("https://files.example.com/f/"), true);
   const token = tokenOf(url);
   equal(fm.sessions.get(token)?.expires, 1_000 + TTL);
+  equal(fm.issue("owner1", "survival"), url);
+  equal(fm.sessions.size, 1);
 
   const page = await handle(new Request(url));
   equal(page.status, 200);

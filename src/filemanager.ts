@@ -138,6 +138,16 @@ export class FileManager {
   ) {}
 
   issue(ownerId: string, instanceId: string): string {
+    for (const [token, session] of this.sessions) {
+      if (session.expires <= this.now()) {
+        this.sessions.delete(token);
+      } else if (
+        session.ownerId === ownerId && session.instanceId === instanceId
+      ) {
+        session.expires = this.now() + SESSION_TTL;
+        return `${this.baseUrl}/f/${token}`;
+      }
+    }
     const token = crypto.randomUUID().replaceAll("-", "");
     this.sessions.set(token, {
       ownerId,

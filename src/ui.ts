@@ -51,18 +51,37 @@ export function lobbyPanel() {
   };
 }
 
-export function consoleMessage(server: Server, lines?: string[]) {
+const CONSOLE_TEXT_LIMIT = 4000;
+function consoleText(lines: string[]): string {
+  const selected: string[] = [];
+  let length = 0;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].replaceAll("```", "ˋˋˋ");
+    const available = CONSOLE_TEXT_LIMIT - length - (selected.length ? 1 : 0);
+    if (available <= 0) break;
+    selected.push(line.slice(-available));
+    length += Math.min(line.length, available) + (selected.length > 1 ? 1 : 0);
+    if (line.length > available) break;
+  }
+  return selected.reverse().join("\n");
+}
+
+export function consoleMessage(server: Server, lines?: string[], busy = false) {
   const embed = new EmbedBuilder().setColor(COLOR).setTitle("Console")
     .setFooter({ text: marker(server, "console") }).setTimestamp();
   const text = lines === undefined
     ? "Console unavailable."
     : lines.length
-    ? `\`\`\`text\n${
-      lines.slice(-15).join("\n").replaceAll("```", "ˋˋˋ").slice(-3800)
-    }\n\`\`\``
+    ? `\`\`\`text\n${consoleText(lines)}\n\`\`\``
     : "No console output yet.";
   embed.setDescription(text);
-  return { embeds: [embed], components: [], ...silent };
+  return {
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
+      button("command", "Run command", ButtonStyle.Primary).setDisabled(busy),
+    )],
+    ...silent,
+  };
 }
 
 export function statusMessage(
@@ -117,7 +136,7 @@ export function statusMessage(
     },
     {
       name: "Address",
-      value: code(instance?.hostname ?? server.hostname ?? "pending"),
+      value: code(server.hostname ?? instance?.hostname ?? "pending"),
       inline: true,
     },
     {
@@ -163,7 +182,11 @@ export function statusMessage(
   return { embeds: [embed], components: [row], ...silent };
 }
 
-export function actionsMessage(server: Server, busy = false) {
+export function actionsMessage(
+  server: Server,
+  fileManagerUrl?: string,
+  busy = false,
+) {
   const embed = new EmbedBuilder().setColor(COLOR).setTitle(
     "Additional actions",
   ).setFooter({ text: marker(server, "actions") });
@@ -176,7 +199,12 @@ export function actionsMessage(server: Server, busy = false) {
     "Files, server software, and your join address. " +
       "The file manager link works until this channel expires.",
   );
-  row.addComponents(button("files", "File Manager"));
+  if (fileManagerUrl) {
+    row.addComponents(
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(fileManagerUrl)
+        .setLabel("File Manager"),
+    );
+  }
   if (server.software === "fabric") {
     row.addComponents(button("install", "Install mod"));
   } else if (server.software === "paper" || server.software === "purpur") {
@@ -189,7 +217,9 @@ export function actionsMessage(server: Server, busy = false) {
     button("ip", "Change IP"),
     button("delete", "Delete server", ButtonStyle.Danger),
   );
-  for (const component of row.components) component.setDisabled(busy);
+  for (const component of row.components) {
+    if (component.data.style !== ButtonStyle.Link) component.setDisabled(busy);
+  }
   return { embeds: [embed], components: [row], ...silent };
 }
 
@@ -214,13 +244,6 @@ export function inputModal(
     );
 }
 
-export function confirmationButtons(token: string) {
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
-    button(`confirm:${token}`, "Confirm", ButtonStyle.Danger),
-    button(`cancel:${token}`, "Cancel"),
-  )];
-}
-
 export function consoleModal() {
   return inputModal(
     "pica:command-submit",
@@ -229,7 +252,7 @@ export function consoleModal() {
     "Command",
     "One command, without a leading /. Example: say Hello everyone",
     "say Hello everyone",
-    4096,
+    4000,
   );
 }
 

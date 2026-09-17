@@ -44,6 +44,15 @@ export function validateId(id: string): string {
   return id;
 }
 
+export function validateSubdomain(subdomain: string): string {
+  if (!INSTANCE_ID.test(subdomain)) {
+    throw new InputError(
+      "Subdomain must be 1–32 lowercase letters, digits, or internal hyphens.",
+    );
+  }
+  return subdomain;
+}
+
 export function validatePath(path: string, allowRoot = false): string {
   if (
     /[\\:]/.test(path) || [...path].some((c) => c.charCodeAt(0) < 32) ||
@@ -63,11 +72,11 @@ export function validatePath(path: string, allowRoot = false): string {
 
 export function validateCommand(command: string): string {
   if (
-    !command.trim() || command.length > 4096 || /[\r\n]/.test(command) ||
+    !command.trim() || command.length > 4000 || /[\r\n]/.test(command) ||
     command.trimStart().startsWith("/")
   ) {
     throw new InputError(
-      "Enter one console command (1–4,096 characters), without a leading / or newlines.",
+      "Enter one console command (1–4,000 characters), without a leading / or newlines.",
     );
   }
   return command;
@@ -197,6 +206,14 @@ export class PicaApi {
   run(id: string, command: string): Promise<{ ok: true; response?: string }> {
     return this.json(this.route(id, "run"), {
       command: validateCommand(command),
+    });
+  }
+  changeSubdomain(
+    id: string,
+    subdomain: string,
+  ): Promise<Pick<Instance, "hostname">> {
+    return this.json(this.route(id, "change-subdomain"), {
+      subdomain: validateSubdomain(subdomain),
     });
   }
   files(

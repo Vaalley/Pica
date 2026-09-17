@@ -5,10 +5,9 @@ import { Catalogs } from "./catalogs.ts";
 import { downloadAttachment } from "./common.ts";
 import { Confirmations } from "./confirmations.ts";
 import { privateOverwrites } from "./discord.ts";
-import { FileManager } from "./filemanager.ts";
 import { createHandler, type PortalInteraction } from "./handler.ts";
 import { type Fixture, fixture, instance } from "./test_helpers.ts";
-import { statusMessage } from "./ui.ts";
+import { actionsMessage, consoleMessage, statusMessage } from "./ui.ts";
 
 function interaction(
   kind: "button" | "modal" | "select",
@@ -23,7 +22,13 @@ function interaction(
     guildId: "guild",
     channelId,
     user: { id: userId },
-    message: { id: "welcome", flags: { has: () => false } },
+    message: {
+      id: "welcome",
+      flags: {
+        has: (flag: unknown) =>
+          values.ephemeral === true && flag === MessageFlags.Ephemeral,
+      },
+    },
     deferred: false,
     replied: false,
     attachmentSizeLimit: 10 * 1024 ** 2,
@@ -64,18 +69,45 @@ function interaction(
       return Promise.resolve();
     },
   };
-  return { value: fake as unknown as PortalInteraction, events };
+  // The fixture implements only the PortalInteraction members the handler uses.
+  const portalInteraction = fake as unknown as PortalInteraction;
+  return { value: portalInteraction, events };
 }
+function modalCustomId(event: Record<string, unknown>): string {
+  const modal = event.modal;
+  if (
+    !modal || typeof modal !== "object" || !("custom_id" in modal) ||
+    typeof modal.custom_id !== "string"
+  ) {
+    throw new Error("Expected a modal interaction response.");
+  }
+  return modal.custom_id;
+}
+
+function selectCustomId(event: Record<string, unknown>): string {
+  const components = event.components;
+  if (!Array.isArray(components)) {
+    throw new Error("Expected select components.");
+  }
+  const row = components[0];
+  if (
+    !row || typeof row !== "object" || !("toJSON" in row) ||
+    typeof row.toJSON !== "function"
+  ) throw new Error("Expected a component row.");
+  const payload = row.toJSON();
+  if (
+    !payload || typeof payload !== "object" || !("components" in payload) ||
+    !Array.isArray(payload.components) ||
+    typeof payload.components[0]?.custom_id !== "string"
+  ) throw new Error("Expected a select custom ID.");
+  return payload.components[0].custom_id;
+}
+
 function handlerFor(f: Fixture) {
   const catalogs = new Catalogs(() =>
     Promise.resolve(Response.json({ hits: [] }))
   );
-  const files = new FileManager(
-    f.api,
-    "http://files.test",
-    () => f.service.touch("alice"),
-  );
-  return createHandler(f.service, new Set(["guild"]), catalogs, files);
+  return createHandler(f.service, new Set(["guild"]), catalogs);
 }
 
 Deno.test("ordinary members create through the lobby and receive their private channel", async () => {
@@ -140,7 +172,7 @@ Deno.test("owner can start without administrator permission or an instance ID", 
       f.requests.includes(`/instance/${server.instanceId}/start`),
       true,
     );
-    match(String(input.events.at(-1)!.content), /Your server is ready/);
+    match(String(input.events.at(-1)!.content), /Server started/);
   } finally {
     f.store.close();
   }
@@ -161,7 +193,7 @@ Deno.test("controls outside the owner's channel are denied", async () => {
   }
 });
 
-Deno.test("restart requires a one-use confirmation and cannot be replayed", async () => {
+Deno.test("restart uses a typed modal confirmation", async () => {
   const f = fixture();
   try {
     const server = await f.service.create("guild", "alice", "ACCEPT");
@@ -169,18 +201,18 @@ Deno.test("restart requires a one-use confirmation and cannot be replayed", asyn
     const first = interaction("button", "pica:restart");
     await handler(first.value);
     equal(f.requests.some((p) => p.endsWith("/restart")), false);
-    const row = first.events[0].components as {
-      toJSON(): { components: { custom_id: string }[] };
-    }[];
-    const customId = row[0].toJSON().components[0].custom_id;
-    await handler(interaction("button", customId).value);
+    equal(first.events[0].type, "modal");
+    const customId = modalCustomId(first.events[0]);
+    match(customId, /^pica:action-submit:/);
+    await handler(
+      interaction("modal", customId, "alice", "channel-alice", {
+        confirmation: "RESTART",
+      }).value,
+    );
     equal(
       f.requests.includes(`/instance/${server.instanceId}/restart`),
       true,
     );
-    const count = f.requests.length;
-    await handler(interaction("button", customId).value);
-    equal(f.requests.length, count);
   } finally {
     f.store.close();
   }
@@ -246,6 +278,40 @@ Deno.test("status message shows power-aware buttons and no backend internals", (
   }
 });
 
+Deno.test("action panel makes the File Manager button a direct link", async () => {
+  const f = fixture();
+  try {
+    const server = await f.service.create("guild", "alice", "ACCEPT");
+    const panel = actionsMessage(server, "https://files.example.com/f/token");
+    const text = JSON.stringify(panel);
+    match(text, /"url":"https:\/\/files\.example\.com\/f\/token"/);
+    equal(text.includes("pica:files"), false);
+  } finally {
+    f.store.close();
+  }
+});
+
+Deno.test("console panel offers a command dialog and retains more than fifteen lines", async () => {
+  const f = fixture();
+  try {
+    const server = await f.service.create("guild", "alice", "ACCEPT");
+    const panel = consoleMessage(
+      server,
+      Array.from({ length: 20 }, (_, index) => `line ${index}`),
+    );
+    const text = JSON.stringify(panel);
+    match(text, /pica:command/);
+    match(text, /line 0/);
+
+    const command = interaction("button", "pica:command");
+    await handlerFor(f)(command.value);
+    equal(command.events[0].type, "modal");
+    equal(modalCustomId(command.events[0]), "pica:command-submit");
+  } finally {
+    f.store.close();
+  }
+});
+
 Deno.test("attachment downloads reject arbitrary URLs and oversized attachments without requests", async () => {
   let calls = 0;
   const fetcher: typeof fetch = () => {
@@ -293,12 +359,10 @@ Deno.test("software select round-trips a valid id and installs the jar", async (
       }
       return Promise.resolve(new Response(new Uint8Array([1, 2, 3])));
     });
-    const files = new FileManager(f.api, "http://files.test", () => {});
     const handler = createHandler(
       f.service,
       new Set(["guild"]),
       catalogs,
-      files,
     );
     const pick = interaction(
       "select",
@@ -310,17 +374,16 @@ Deno.test("software select round-trips a valid id and installs the jar", async (
       },
     );
     await handler(pick.value);
-    const menu = pick.events.at(-1)!.components as {
-      toJSON(): { components: { custom_id: string }[] };
-    }[];
-    const customId = menu[0].toJSON().components[0].custom_id;
+    const customId = selectCustomId(pick.events.at(-1)!);
     match(customId, /^pica:version-pick:paper$/);
     const choose = interaction("select", customId, "alice", "channel-alice", {
       values: ["1.21.4"],
+      ephemeral: true,
     });
     await handler(choose.value);
-    match(String(choose.events.at(-1)!.content), /Installed Paper 1\.21\.4/);
-    equal(f.store.owner("alice")!.software, "paper");
+    equal(choose.events[0].type, "update");
+    equal(choose.events[0].content, "Downloading and installing…");
+    match(String(choose.events.at(-1)!.content), /Server software updated/);
     equal(
       f.requests.includes(`/instance/${server.instanceId}/fs/write`),
       true,

@@ -8,6 +8,7 @@ import {
   validateCommand,
   validateId,
   validatePath,
+  validateSubdomain,
 } from "./api.ts";
 
 const secret = "test-secret-".repeat(4);
@@ -31,6 +32,7 @@ Deno.test("all JSON operations use exact documented fields, POST and server-side
   }
   await api.tail("survival");
   await api.run("survival", "say hello");
+  await api.changeSubdomain("survival", "wild-willow");
   await api.files("survival");
   await api.stat("survival", "boot.jar");
   await api.mutate("survival", "mkdir", "plugins/data");
@@ -51,6 +53,7 @@ Deno.test("all JSON operations use exact documented fields, POST and server-side
       {},
     ]),
     ["/instance/survival/run", { command: "say hello" }],
+    ["/instance/survival/change-subdomain", { subdomain: "wild-willow" }],
     ["/instance/survival/fs/list", { path: "" }],
     ["/instance/survival/fs/stat", { path: "boot.jar" }],
     ["/instance/survival/fs/mkdir", { path: "plugins/data" }],
@@ -103,6 +106,12 @@ Deno.test("invalid IDs, paths, commands, EULA and permission bits are rejected b
     throws(() => validateId(id), InputError);
   }
   for (const id of ["a", "a-b", "a".repeat(32)]) equal(validateId(id), id);
+  for (const subdomain of ["a", "a-b", "a".repeat(32)]) {
+    equal(validateSubdomain(subdomain), subdomain);
+  }
+  for (const subdomain of ["A", "-a", "a-", "a_b", "", "a".repeat(33)]) {
+    throws(() => validateSubdomain(subdomain), InputError);
+  }
   for (const path of ["../x", "/etc", "C:/file", "a\\b", "a/../b", "a\n"]) {
     throws(() => validatePath(path), InputError);
   }
@@ -117,10 +126,10 @@ Deno.test("invalid IDs, paths, commands, EULA and permission bits are rejected b
       " /list",
       "say a\nsay b",
       "a\rb",
-      "x".repeat(4097),
+      "x".repeat(4001),
     ]
   ) throws(() => validateCommand(command), InputError);
-  equal(validateCommand("x".repeat(4096)).length, 4096);
+  equal(validateCommand("x".repeat(4000)).length, 4000);
   throws(() => api.create("a", false), InputError);
   for (const mode of [-1, 512, 1.5, undefined]) {
     throws(() => api.mutate("a", "chmod", "file", { mode }), InputError);
