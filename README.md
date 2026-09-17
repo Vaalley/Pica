@@ -56,13 +56,16 @@ DISCORD_TOKEN=your-bot-token
 DISCORD_GUILD_IDS=your-discord-guild-id
 PICA_URL=http://127.0.0.1:8091
 PICA_SECRET=your-backend-secret
-PICA_FILES_URL=http://127.0.0.1:8092
+PICA_FILES_URL=https://fs.example.com
 PICA_FILES_PORT=8092
+PICA_FILES_HOST=127.0.0.1
 ```
 
 `PICA_FILES_URL` is the public origin members use to reach the file manager
 (point it at a reverse proxy or tunnel if the bot host isn't directly
-reachable); `PICA_FILES_PORT` is the local port it binds.
+reachable); `PICA_FILES_PORT` is the local port it binds. `PICA_FILES_HOST`
+defaults to `127.0.0.1` — set it to `0.0.0.0` only if the file manager must be
+reachable without a proxy.
 
 Install the bot with the `bot` and `applications.commands` scopes. It needs
 **Manage Channels**, **Manage Roles**, **View Channels**, **Send Messages**,

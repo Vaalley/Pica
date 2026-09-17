@@ -387,12 +387,16 @@ export class Catalogs {
         headers: UA,
         signal: AbortSignal.timeout(300_000),
       });
-    } catch {
-      throw new InputError("The download is unavailable.");
+    } catch (error) {
+      throw new InputError(
+        `The download is unavailable: ${
+          error instanceof Error ? error.message : "request failed"
+        }`,
+      );
     }
     if (!res.ok) {
       await res.body?.cancel();
-      throw new InputError("The download is unavailable.");
+      throw new InputError(`The download failed with HTTP ${res.status}.`);
     }
     return await readBytes(res, MAX_FILE_BYTES);
   }
