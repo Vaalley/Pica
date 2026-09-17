@@ -219,7 +219,7 @@ export class Servers {
             ? false
             : this.online.get(server.instanceId) ?? true,
         );
-        await this.render(server);
+        await this.paint(server);
         return instance;
       } catch (error) {
         await this.paint(server, errorMessage(error));
@@ -262,7 +262,7 @@ export class Servers {
           server.software = software;
           this.store.save(server);
         }
-        await this.render(
+        await this.paint(
           server,
           `${notice}${
             result.restartRequired || path === "boot.jar"
@@ -290,7 +290,7 @@ export class Servers {
       const domain = (server.hostname ?? "").split(".").slice(1).join(".");
       server.hostname = domain ? `${subdomain}.${domain}` : subdomain;
       this.store.save(server);
-      await this.render(server);
+      await this.paint(server);
     });
   }
 
