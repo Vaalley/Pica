@@ -220,8 +220,12 @@ export class Catalogs {
     if (!url) {
       throw new InputError(`No downloadable file found for ${result.name}.`);
     }
+    let tail = "";
+    try {
+      tail = new URL(url).pathname.split("/").pop() ?? "";
+    } catch { /* malformed external URL; fall back to the project name */ }
     const filename = download.fileInfo?.name ??
-      decodeURIComponent(url.split("/").pop() ?? "plugin.jar");
+      (tail.includes(".") ? tail : `${result.name}.jar`);
     return { url, filename: sanitize(filename) };
   }
 

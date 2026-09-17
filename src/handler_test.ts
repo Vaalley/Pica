@@ -267,3 +267,65 @@ Deno.test("attachment downloads reject arbitrary URLs and oversized attachments 
   );
   equal(calls, 0);
 });
+
+Deno.test("software select round-trips a valid id and installs the jar", async () => {
+  const f = fixture();
+  try {
+    const server = await f.service.create("guild", "alice", "ACCEPT");
+    const catalogs = new Catalogs((input) => {
+      const url = String(input);
+      if (url.includes("/builds")) {
+        return Promise.resolve(
+          Response.json([{
+            downloads: {
+              "server:default": {
+                name: "paper-1.21.4-1.jar",
+                url: "https://fill-data.papermc.io/paper.jar",
+              },
+            },
+          }]),
+        );
+      }
+      if (url.includes("fill.papermc.io")) {
+        return Promise.resolve(
+          Response.json({ versions: { "1.21": ["1.21.4"] } }),
+        );
+      }
+      return Promise.resolve(new Response(new Uint8Array([1, 2, 3])));
+    });
+    const files = new FileManager(f.api, "http://files.test", () => {});
+    const handler = createHandler(
+      f.service,
+      new Set(["guild"]),
+      catalogs,
+      files,
+    );
+    const pick = interaction(
+      "select",
+      "pica:software-pick",
+      "alice",
+      "channel-alice",
+      {
+        values: ["paper"],
+      },
+    );
+    await handler(pick.value);
+    const menu = pick.events.at(-1)!.components as {
+      toJSON(): { components: { custom_id: string }[] };
+    }[];
+    const customId = menu[0].toJSON().components[0].custom_id;
+    match(customId, /^pica:version-pick:paper$/);
+    const choose = interaction("select", customId, "alice", "channel-alice", {
+      values: ["1.21.4"],
+    });
+    await handler(choose.value);
+    match(String(choose.events.at(-1)!.content), /Installed Paper 1\.21\.4/);
+    equal(f.store.owner("alice")!.software, "paper");
+    equal(
+      f.requests.includes(`/instance/${server.instanceId}/fs/write`),
+      true,
+    );
+  } finally {
+    f.store.close();
+  }
+});
