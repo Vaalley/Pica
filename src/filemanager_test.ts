@@ -4,17 +4,20 @@ import { FileManager } from "./filemanager.ts";
 
 const TTL = 3_600_000;
 const secret = "test-secret-".repeat(4);
+const bridgeKey = "bridge-secret-".repeat(3);
 
-type Call = { url: string; fields: Record<string, unknown>; form?: FormData };
+type Call = { url: string; fields: Record<string, unknown>; headers: Headers };
 
 function setup(respond?: (call: Call) => Response) {
   const calls: Call[] = [];
+  const upstreamCalls: Request[] = [];
   const api = new PicaApi("http://127.0.0.1:8091/", secret, (input, init) => {
-    const call: Call = { url: String(input), fields: {} };
-    if (init?.body instanceof FormData) call.form = init.body;
-    else if (typeof init?.body === "string") {
-      call.fields = JSON.parse(init.body);
-    }
+    const fields = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    const call = {
+      url: String(input),
+      fields,
+      headers: new Headers(init?.headers),
+    };
     calls.push(call);
     return Promise.resolve(
       respond?.(call) ?? Response.json({ ok: true, path: "x" }),
@@ -26,216 +29,198 @@ function setup(respond?: (call: Call) => Response) {
     api,
     "https://files.example.com",
     (id) => used.push(id),
+    "http://127.0.0.1:8080",
+    bridgeKey,
     () => now.t,
+    (input, init) => {
+      upstreamCalls.push(new Request(input, init));
+      return Promise.resolve(new Response("filebrowser", { status: 200 }));
+    },
   );
-  return { calls, fm, handle: fm.handler(), now, used };
+  return { calls, fm, handle: fm.handler(), now, upstreamCalls, used };
 }
 
 const tokenOf = (url: string) => url.split("/f/")[1];
+const bridgeHeaders = (token: string) => ({
+  "Content-Type": "application/json",
+  "X-Pica-File-Session": token,
+  "X-Pica-Filebrowser-Bridge-Key": bridgeKey,
+});
 
-Deno.test("issue returns a URL whose token authenticates and slides expiry", async () => {
-  const { fm, handle, now, used } = setup(() =>
-    Response.json({ path: "", entries: [] })
-  );
+Deno.test("file link establishes a private cookie and proxies FileBrowser requests", async () => {
+  const { fm, handle, now, upstreamCalls, used } = setup();
   const url = fm.issue("owner1", "survival");
-  equal(url.startsWith("https://files.example.com/f/"), true);
   const token = tokenOf(url);
-  equal(fm.sessions.get(token)?.expires, 1_000 + TTL);
-  equal(fm.issue("owner1", "survival"), url);
-  equal(fm.sessions.size, 1);
 
-  const page = await handle(new Request(url));
-  equal(page.status, 200);
-  equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
-  const html = await page.text();
-  ok(html.includes('"/f/" + token + "/api/"'));
+  const entry = await handle(new Request(url));
+  equal(entry.status, 303);
+  equal(entry.headers.get("location"), "/");
+  ok(entry.headers.get("set-cookie")?.includes(`pica_file_session=${token}`));
+  ok(entry.headers.get("set-cookie")?.includes("HttpOnly"));
+  ok(entry.headers.get("set-cookie")?.includes("Secure"));
 
-  now.t += 100;
-  const list = await handle(
-    new Request(`${url}/api/list?path=`, { method: "GET" }),
+  const proxied = await handle(
+    new Request("https://files.example.com/api/resources", {
+      headers: {
+        Cookie: `pica_file_session=${token}`,
+        "X-Pica-File-Session": "attacker",
+      },
+    }),
   );
-  equal(list.status, 200);
-  deepStrictEqual(await list.json(), { path: "", entries: [] });
+  equal(proxied.status, 200);
+  equal(await proxied.text(), "filebrowser");
+  equal(upstreamCalls.length, 1);
+  equal(upstreamCalls[0].url, "http://127.0.0.1:8080/api/resources");
+  equal(upstreamCalls[0].headers.get("X-Pica-File-Session"), token);
+  equal(upstreamCalls[0].headers.get("cookie"), null);
+  ok(proxied.headers.get("set-cookie")?.includes(`pica_file_session=${token}`));
   equal(fm.sessions.get(token)?.expires, now.t + TTL);
   deepStrictEqual(used, ["owner1", "owner1"]);
 });
 
-Deno.test("unknown and expired tokens get a 404 page", async () => {
+Deno.test("unknown, expired, and revoked browser sessions are hidden", async () => {
   const { fm, handle, now } = setup();
-  equal((await handle(new Request("https://x/f/nope"))).status, 404);
-  equal((await handle(new Request("https://x/other"))).status, 404);
+  equal((await handle(new Request("https://files.example.com/"))).status, 404);
   const url = fm.issue("owner1", "survival");
+  const token = tokenOf(url);
   now.t += TTL + 1;
   equal((await handle(new Request(url))).status, 404);
-});
-
-Deno.test("revoke drops only that owner's sessions", async () => {
-  const { fm, handle } = setup(() => Response.json({ path: "", entries: [] }));
-  const mine = fm.issue("owner1", "survival");
-  const other = fm.issue("owner2", "creative");
+  const active = fm.issue("owner1", "survival");
   fm.revoke("owner1");
-  equal((await handle(new Request(mine))).status, 404);
-  equal((await handle(new Request(other))).status, 200);
+  equal((await handle(new Request(active))).status, 404);
+  equal(fm.sessions.has(token), false);
 });
 
-Deno.test("list, mkdir, rename and delete proxy to the fs endpoints", async () => {
-  const { calls, fm, handle } = setup((call) =>
+Deno.test("bridge requires its private key and a live browser session", async () => {
+  const { fm } = setup();
+  const bridge = fm.bridgeHandler();
+  const url = fm.issue("owner1", "survival");
+  const token = tokenOf(url);
+  const target = "http://127.0.0.1:8093/v1/fs/list";
+
+  equal(
+    (await bridge(
+      new Request(target, {
+        method: "POST",
+        headers: { "X-Pica-File-Session": token },
+        body: JSON.stringify({ path: "" }),
+      }),
+    )).status,
+    404,
+  );
+  equal(
+    (await bridge(
+      new Request(target, {
+        method: "POST",
+        headers: { ...bridgeHeaders("expired") },
+        body: JSON.stringify({ path: "" }),
+      }),
+    )).status,
+    404,
+  );
+});
+
+Deno.test("bridge maps virtual filesystem operations to the bound instance", async () => {
+  const { calls, fm } = setup((call) =>
     call.url.endsWith("fs/list")
       ? Response.json({ path: "plugins", entries: [] })
       : Response.json({ ok: true, path: "x", restartRequired: false })
   );
-  const url = fm.issue("owner1", "survival");
-  const base = `${url}/api`;
-  const json = (body: unknown) => ({
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const bridge = fm.bridgeHandler();
+  const token = tokenOf(fm.issue("owner1", "survival"));
+  const request = (action: string, body: unknown) =>
+    bridge(
+      new Request(
+        `http://127.0.0.1:8093/v1/fs/${action}`,
+        {
+          method: "POST",
+          headers: bridgeHeaders(token),
+          body: JSON.stringify(body),
+        },
+      ),
+    );
 
-  const list = await handle(
-    new Request(`${base}/list?path=${encodeURIComponent("plugins")}`),
-  );
-  equal(list.status, 200);
-  deepStrictEqual(await list.json(), { path: "plugins", entries: [] });
+  const listed = await request("list", { path: "plugins" });
+  equal(listed.status, 200);
+  deepStrictEqual(await listed.json(), { path: "plugins", entries: [] });
   equal(calls[0].url, "http://127.0.0.1:8091/instance/survival/fs/list");
   equal(calls[0].fields.path, "plugins");
 
-  equal(
-    (await handle(new Request(`${base}/mkdir`, json({ path: "a/b" })))).status,
-    200,
-  );
+  equal((await request("mkdir", { path: "plugins/data" })).status, 200);
   equal(calls[1].url, "http://127.0.0.1:8091/instance/survival/fs/mkdir");
-  equal(calls[1].fields.path, "a/b");
+  equal(calls[1].fields.path, "plugins/data");
 
-  equal(
-    (await handle(
-      new Request(
-        `${base}/rename`,
-        json({ path: "a", destination: "b/c" }),
-      ),
-    )).status,
-    200,
-  );
+  equal((await request("rename", { path: "a", destination: "b" })).status, 200);
   equal(calls[2].url, "http://127.0.0.1:8091/instance/survival/fs/rename");
-  equal(calls[2].fields.path, "a");
-  equal(calls[2].fields.destination, "b/c");
+  equal(calls[2].fields.destination, "b");
 
   equal(
-    (await handle(
-      new Request(`${base}/delete`, json({ path: "a", recursive: true })),
-    )).status,
+    (await request("copy", { path: "a", destination: "b", recursive: true }))
+      .status,
     200,
   );
-  equal(calls[3].url, "http://127.0.0.1:8091/instance/survival/fs/delete");
+  equal(calls[3].url, "http://127.0.0.1:8091/instance/survival/fs/copy");
   equal(calls[3].fields.recursive, true);
+
+  equal((await request("chmod", { path: "a", mode: 0o644 })).status, 200);
+  equal(calls[4].url, "http://127.0.0.1:8091/instance/survival/fs/chmod");
+  equal(calls[4].fields.mode, 0o644);
 });
 
-Deno.test("upload forwards the file into the target directory", async () => {
-  const { calls, fm, handle } = setup(() =>
-    Response.json({ path: "plugins/jar.jar", bytes: 3, restartRequired: false })
+Deno.test("bridge streams content requests to the bound instance", async () => {
+  const { calls, fm } = setup((call) =>
+    call.url.includes("/fs/content?")
+      ? new Response(new Uint8Array([9, 8, 7]), {
+        status: 206,
+        headers: { "Content-Range": "bytes 0-2/9" },
+      })
+      : Response.json({ ok: true })
   );
-  const url = fm.issue("owner1", "survival");
-  const form = new FormData();
-  form.append("file", new File([new Uint8Array([1, 2, 3])], "jar.jar"));
-  const response = await handle(
+  const token = tokenOf(fm.issue("owner1", "survival"));
+  const response = await fm.bridgeHandler()(
     new Request(
-      `${url}/api/upload?path=${encodeURIComponent("plugins")}`,
-      { method: "POST", body: form },
+      "http://127.0.0.1:8093/v1/fs/content?path=logs/latest.log",
+      {
+        headers: {
+          "Range": "bytes=0-2",
+          "X-Pica-File-Session": token,
+          "X-Pica-Filebrowser-Bridge-Key": bridgeKey,
+        },
+      },
     ),
   );
-  equal(response.status, 200);
-  deepStrictEqual(await response.json(), {
-    path: "plugins/jar.jar",
-    bytes: 3,
-    restartRequired: false,
-  });
-  equal(calls[0].url, "http://127.0.0.1:8091/instance/survival/fs/write");
-  equal(calls[0].form?.get("path"), "plugins/jar.jar");
-  equal((calls[0].form?.get("file") as File).name, "jar.jar");
-});
 
-Deno.test("download returns the file bytes as an attachment", async () => {
-  const { calls, fm, handle } = setup(() =>
-    new Response(new Uint8Array([9, 8, 7]))
-  );
-  const url = fm.issue("owner1", "survival");
-  const response = await handle(
-    new Request(
-      `${url}/api/download?path=${encodeURIComponent("logs/latest.log")}`,
-    ),
-  );
-  equal(response.status, 200);
-  equal(
-    response.headers.get("Content-Disposition"),
-    'attachment; filename="latest.log"',
-  );
+  equal(response.status, 206);
+  equal(response.headers.get("Content-Range"), "bytes 0-2/9");
   deepStrictEqual([...new Uint8Array(await response.arrayBuffer())], [9, 8, 7]);
-  equal(calls[0].url, "http://127.0.0.1:8091/instance/survival/fs/read");
-  equal(calls[0].fields.path, "logs/latest.log");
+  equal(
+    calls[0].url,
+    "http://127.0.0.1:8091/instance/survival/fs/content?path=logs%2Flatest.log",
+  );
+  equal(calls[0].headers.get("range"), "bytes=0-2");
 });
 
-Deno.test("invalid paths are rejected with 400 before touching the API", async () => {
-  const { calls, fm, handle } = setup();
-  const url = fm.issue("owner1", "survival");
-  const base = `${url}/api`;
-  const json = (body: unknown) => ({
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  for (const bad of ["../x", "a\\b", "/abs"]) {
-    const response = await handle(
-      new Request(`${base}/list?path=${encodeURIComponent(bad)}`),
+Deno.test("bridge rejects invalid paths and methods before calling Pica", async () => {
+  const { calls, fm } = setup();
+  const token = tokenOf(fm.issue("owner1", "survival"));
+  const bridge = fm.bridgeHandler();
+  const request = (path: string, method = "POST") =>
+    bridge(
+      new Request(
+        `http://127.0.0.1:8093/v1/fs/list`,
+        {
+          method,
+          headers: bridgeHeaders(token),
+          body: method === "GET" || method === "HEAD"
+            ? undefined
+            : JSON.stringify({ path }),
+        },
+      ),
     );
-    equal(response.status, 400);
-    equal(typeof (await response.json()).error, "string");
+
+  for (const path of ["../x", "a\\b", "/abs"]) {
+    equal((await request(path)).status, 400);
   }
-  equal(
-    (await handle(new Request(`${base}/mkdir`, json({ path: "" })))).status,
-    400,
-  );
-  equal(
-    (await handle(
-      new Request(`${base}/rename`, json({ path: "a", destination: "../b" })),
-    )).status,
-    400,
-  );
-  equal(
-    (await handle(
-      new Request(`${base}/upload?path=${encodeURIComponent("../x")}`, {
-        method: "POST",
-        body: new FormData(),
-      }),
-    )).status,
-    400,
-  );
+  equal((await request("", "GET")).status, 405);
   equal(calls.length, 0);
-});
-
-Deno.test("API failures map to 400 for InputError and 500 otherwise", async () => {
-  const { fm, handle } = setup(() =>
-    Response.json({ error: "disk full" }, { status: 500 })
-  );
-  const url = fm.issue("owner1", "survival");
-  const response = await handle(
-    new Request(`${url}/api/list?path=plugins`),
-  );
-  equal(response.status, 500);
-  deepStrictEqual(await response.json(), { error: "File manager failed." });
-});
-
-Deno.test("wrong methods and unknown routes are rejected", async () => {
-  const { fm, handle } = setup();
-  const url = fm.issue("owner1", "survival");
-  equal(
-    (await handle(new Request(`${url}/api/list`, { method: "POST" }))).status,
-    405,
-  );
-  equal(
-    (await handle(new Request(`${url}/api/upload`))).status,
-    405,
-  );
-  equal((await handle(new Request(`${url}/api/nope`))).status, 404);
-  equal((await handle(new Request(`${url}/other`))).status, 404);
 });

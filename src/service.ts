@@ -26,7 +26,6 @@ export class Servers {
   readonly locks = new OperationLocks();
   sessions?: Sessions;
   private snapshots = new Map<string, Instance>();
-  private online = new Map<string, boolean>();
   private activity = new Map<string, number>();
   constructor(
     readonly store: Store,
@@ -103,7 +102,7 @@ export class Servers {
   ): Promise<Server> {
     if (eula.trim() !== "ACCEPT") {
       throw new InputError(
-        "Type ACCEPT to accept the Minecraft EULA and create your server.",
+        "Type ACCEPT to accept the Minecraft EULA and Pica Terms, then create your server.",
       );
     }
     return await this.locks.run(ownerId, async () => {
@@ -212,14 +211,6 @@ export class Servers {
       try {
         const instance = await this.api.instance(server.instanceId, action);
         this.snapshots.set(server.instanceId, instance);
-        this.online.set(
-          server.instanceId,
-          action === "start" || action === "restart"
-            ? true
-            : action === "stop"
-            ? false
-            : this.online.get(server.instanceId) ?? true,
-        );
         await this.paint(server);
         return instance;
       } catch (error) {
@@ -317,10 +308,8 @@ export class Servers {
       }
       try {
         lines = (await this.api.tail(server.instanceId, timeoutMs)).lines;
-        this.online.set(server.instanceId, true);
       } catch (error) {
         if (error instanceof PicaApiError && error.status === 502) {
-          this.online.set(server.instanceId, false);
           lines = [];
         } else {
           console.error("Could not read the server console.");
@@ -352,7 +341,7 @@ export class Servers {
       status: statusMessage(
         server,
         instance,
-        this.online.get(server.instanceId),
+        instance?.online,
         notice,
         busy,
       ),
@@ -424,7 +413,6 @@ export class Servers {
         await this.rooms.remove(server);
         this.store.remove(server);
         this.snapshots.delete(server.instanceId);
-        this.online.delete(server.instanceId);
         this.activity.delete(server.ownerId);
         this.sessions?.revoke(server.ownerId);
       } catch (error) {

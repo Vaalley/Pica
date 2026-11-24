@@ -9,6 +9,7 @@ export const instance = (id: string): Instance => ({
   cpus: 2,
   connections: 0,
   eulaAccepted: true,
+  online: true,
   usedBytes: 0,
   storageBlocked: false,
   restartRequired: false,

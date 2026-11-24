@@ -14,6 +14,9 @@ import { bytes, code } from "./common.ts";
 import { type Server } from "./store.ts";
 
 const COLOR = 0x65c9a5;
+const STATUS_ONLINE_COLOR = 0x57f287;
+const STATUS_OFFLINE_COLOR = 0xed4245;
+const STATUS_BUSY_COLOR = 0x5865f2;
 function button(action: string, label: string, style = ButtonStyle.Secondary) {
   return new ButtonBuilder().setCustomId(`pica:${action}`).setLabel(label)
     .setStyle(style);
@@ -37,7 +40,8 @@ export function lobbyPanel() {
         .addFields({
           name: "Before you create",
           value:
-            "You'll be asked to accept the [Minecraft EULA](https://www.minecraft.net/eula).",
+            "You'll be asked to accept the [Minecraft EULA](https://www.minecraft.net/eula) " +
+            "and [Pica Terms](https://pica.host/terms).",
         })
         .setFooter({ text: "Pica · Personal Minecraft hosting" }),
     ],
@@ -91,7 +95,14 @@ export function statusMessage(
   notice?: string,
   busy = false,
 ) {
-  const embed = new EmbedBuilder().setColor(COLOR).setTitle("Server status")
+  const statusColor = busy || server.phase !== "ready" || online === undefined
+    ? STATUS_BUSY_COLOR
+    : online
+    ? STATUS_ONLINE_COLOR
+    : STATUS_OFFLINE_COLOR;
+  const embed = new EmbedBuilder().setColor(statusColor).setTitle(
+    "Server status",
+  )
     .setFooter({ text: marker(server, "status") }).setTimestamp();
   const row = new ActionRowBuilder<ButtonBuilder>();
   if (server.phase === "provisioning") {

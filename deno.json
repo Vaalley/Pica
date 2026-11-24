@@ -8,5 +8,6 @@
   },
   "imports": {
     "discord.js": "npm:discord.js@^14.27.0"
-  }
+  },
+  "exclude": ["filebrowser"]
 }

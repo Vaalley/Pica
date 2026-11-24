@@ -84,6 +84,13 @@ function modalCustomId(event: Record<string, unknown>): string {
   return modal.custom_id;
 }
 
+function modalJson(event: Record<string, unknown>): unknown {
+  if (!event.modal || typeof event.modal !== "object") {
+    throw new Error("Expected a modal interaction response.");
+  }
+  return event.modal;
+}
+
 function selectCustomId(event: Record<string, unknown>): string {
   const components = event.components;
   if (!Array.isArray(components)) {
@@ -117,6 +124,8 @@ Deno.test("ordinary members create through the lobby and receive their private c
     const button = interaction("button", "pica:create", "alice", "lobby");
     await handler(button.value);
     equal(button.events[0].type, "modal");
+    match(JSON.stringify(modalJson(button.events[0])), /pica\.host\/terms/);
+    match(JSON.stringify(modalJson(button.events[0])), /minecraft\.net\/eula/);
     equal(f.remote.size, 0);
     const submit = interaction("modal", "pica:create-submit", "alice", "lobby");
     await handler(submit.value);
@@ -269,10 +278,20 @@ Deno.test("status message shows power-aware buttons and no backend internals", (
     match(text, /pica:stop/);
     match(text, /pica:restart/);
     equal(text.includes("pica:start"), false);
+    equal(online.embeds[0].data.color, 0x57f287);
     const offline = statusMessage(server, instance(server.instanceId), false);
     const offlineText = JSON.stringify(offline);
     match(offlineText, /pica:start/);
     equal(offlineText.includes("pica:stop"), false);
+    equal(offline.embeds[0].data.color, 0xed4245);
+    const busy = statusMessage(
+      server,
+      instance(server.instanceId),
+      true,
+      undefined,
+      true,
+    );
+    equal(busy.embeds[0].data.color, 0x5865f2);
   } finally {
     f.store.close();
   }

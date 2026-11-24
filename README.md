@@ -33,7 +33,7 @@ Three messages update automatically every minute:
 
 | Button                    | What it does                                                                                                                      |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **File Manager**          | Opens a web file manager hosted by the bot. The link carries a random token and dies with the channel.                            |
+| **File Manager**          | Opens FileBrowser Quantum through the bot's authenticated gateway. The link carries a random token and dies with the channel.     |
 | **Install mod or plugin** | Searches Modrinth (mods) or Hangar + SpigotMC (plugins) matching your software, then downloads and installs the file.             |
 | **Change software**       | Pick Vanilla, Paper, Purpur, or Fabric and a version; the server JAR is downloaded and installed as `boot.jar`. Restart to apply. |
 | **Change IP**             | Choose the subdomain of your join address.                                                                                        |
@@ -59,13 +59,52 @@ PICA_SECRET=your-backend-secret
 PICA_FILES_URL=https://fs.example.com
 PICA_FILES_PORT=8092
 PICA_FILES_HOST=127.0.0.1
+PICA_FILEBROWSER_URL=http://127.0.0.1:8080
+PICA_FILEBROWSER_BRIDGE_KEY=at-least-32-random-characters
+PICA_FILEBROWSER_BRIDGE_HOST=127.0.0.1
+PICA_FILEBROWSER_BRIDGE_PORT=8093
 ```
 
-`PICA_FILES_URL` is the public origin members use to reach the file manager
-(point it at a reverse proxy or tunnel if the bot host isn't directly
-reachable); `PICA_FILES_PORT` is the local port it binds. `PICA_FILES_HOST`
-defaults to `127.0.0.1` — set it to `0.0.0.0` only if the file manager must be
-reachable without a proxy.
+`PICA_FILES_URL` is the public origin members use to reach FileBrowser. The bot
+first validates its temporary `/f/<token>` URL, then writes an HttpOnly session
+cookie and proxies the request to `PICA_FILEBROWSER_URL`. Configure FileBrowser
+with its root `baseURL` and disable its own browser login; it is never publicly
+reachable directly.
+
+The bot sends the active session identifier to FileBrowser in
+`X-Pica-File-Session`. FileBrowser must forward that header unchanged, together
+with `X-Pica-Filebrowser-Bridge-Key`, to the private bridge at
+`http://PICA_FILEBROWSER_BRIDGE_HOST:PICA_FILEBROWSER_BRIDGE_PORT/v1/fs/*`. The
+bridge is loopback-only by default, resolves the instance from the active
+session, and calls Pica with the bot-held backend secret. Generate a distinct
+`PICA_FILEBROWSER_BRIDGE_KEY` with at least 32 characters; it is a
+service-to-service credential, not a browser credential.
+
+`PICA_FILES_PORT` is the public gateway bind port. `PICA_FILES_HOST` defaults to
+`127.0.0.1` — set it to `0.0.0.0` only behind a TLS reverse proxy. Keep
+`PICA_FILEBROWSER_BRIDGE_HOST` loopback-only.
+
+The vendored FileBrowser fork is configured by `filebrowser/pica.config.yaml`.
+It disables WebDAV and indexing, exposes only the `Pica` virtual source, and
+uses the filesystem bridge instead of its configured placeholder path for core
+browse, upload, download, edit, folder creation, move, copy, delete, and mode
+changes. Build and run it on the same private network as the bot:
+
+Archive creation, search, duplicate detection, filesystem watching, WebDAV,
+media metadata, and share routes remain disabled because their upstream
+implementations access a configured local source directly.
+
+```sh
+cd filebrowser/frontend && npm ci && npm run build
+cd ../backend && go build -o pica-filebrowser .
+PICA_FILEBROWSER_BRIDGE_URL=http://127.0.0.1:8093 \
+PICA_FILEBROWSER_BRIDGE_KEY="$PICA_FILEBROWSER_BRIDGE_KEY" \
+  ./pica-filebrowser --config ../pica.config.yaml --no-input
+```
+
+Mount persistent writable directories at `/var/lib/filebrowser` and
+`/var/cache/filebrowser`. The FileBrowser listener remains `127.0.0.1:8094`; set
+`PICA_FILEBROWSER_URL=http://127.0.0.1:8094` for the bot gateway.
 
 Install the bot with the `bot` and `applications.commands` scopes. It needs
 **Manage Channels**, **Manage Roles**, **View Channels**, **Send Messages**,

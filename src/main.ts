@@ -35,6 +35,8 @@ const files = new FileManager(
   api,
   Deno.env.get("PICA_FILES_URL") ?? "http://127.0.0.1:8092",
   (ownerId) => servers.touch(ownerId),
+  Deno.env.get("PICA_FILEBROWSER_URL") ?? "http://127.0.0.1:8094",
+  Deno.env.get("PICA_FILEBROWSER_BRIDGE_KEY") ?? "",
 );
 servers.sessions = files;
 const handle = createHandler(servers, guilds, catalogs);
@@ -98,6 +100,13 @@ Deno.serve(
     port: Number(Deno.env.get("PICA_FILES_PORT") ?? "8092"),
   },
   files.handler(),
+);
+Deno.serve(
+  {
+    hostname: Deno.env.get("PICA_FILEBROWSER_BRIDGE_HOST") ?? "127.0.0.1",
+    port: Number(Deno.env.get("PICA_FILEBROWSER_BRIDGE_PORT") ?? "8093"),
+  },
+  files.bridgeHandler(),
 );
 try {
   await client.login(token);

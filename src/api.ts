@@ -8,6 +8,7 @@ export type Instance = {
   cpus: number;
   connections: number;
   eulaAccepted: boolean;
+  online: boolean;
   usedBytes: number;
   storageBlocked: boolean;
   restartRequired: boolean;
@@ -255,6 +256,24 @@ export class PicaApi {
     form.append("path", path);
     form.append("file", file, filename);
     return await (await this.post(route, {}, form)).json();
+  }
+  content(id: string, path: string, request: Request): Promise<Response> {
+    const url = new URL(`${this.url}${this.route(id, "fs/content")}`);
+    url.searchParams.set("path", validatePath(path));
+    const headers = new Headers(request.headers);
+    headers.delete("host");
+    headers.delete("cookie");
+    if (request.method === "PUT") {
+      headers.set("content-type", "application/octet-stream");
+    }
+    return this.request(url, {
+      method: request.method,
+      headers,
+      body: request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : request.body,
+      redirect: "error",
+    });
   }
   mutate(
     id: string,

@@ -212,6 +212,20 @@ Deno.test("activity resets the expiry clock and tick skips busy or expired chann
   }
 });
 
+Deno.test("refresh keeps a stopped server offline when saved console output is available", async () => {
+  const f = fixture();
+  try {
+    const server = await f.service.create("guild", "alice", "ACCEPT");
+    f.remote.get(server.instanceId)!.online = false;
+    await f.service.tick();
+    const status = JSON.stringify(f.rooms.views.at(-1)?.status);
+    match(status, /Offline/);
+    equal(status.includes("Online"), false);
+  } finally {
+    f.store.close();
+  }
+});
+
 Deno.test("setHostname validates and persists Pica's returned hostname", async () => {
   const f = fixture();
   try {
